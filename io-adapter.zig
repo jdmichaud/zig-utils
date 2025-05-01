@@ -321,6 +321,12 @@ pub const Keycode = enum(u8) {
   None,
 };
 
+pub const Mod = enum(u16) {
+  LSHIFT = 1,
+  RSHIFT = 2,
+  LCTRL = 64,
+};
+
 pub const KeyEvent = struct {
   mod: u16,
   scancode: Scancode,
@@ -434,7 +440,7 @@ pub const SDLAdapter = struct {
         sdl.SDL_KEYDOWN => {
           return InputEvent{
             .KeyDown = KeyEvent{
-              .mod = 0,
+              .mod = event.key.keysym.mod,
               .scancode = @enumFromInt(event.key.keysym.scancode),
               .keycode = Keycode.None,
             },
