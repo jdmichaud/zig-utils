@@ -1,6 +1,6 @@
 # Zig utils
 
-- `clap.zig`: Command line argument
+- `clap.zig`: Command line argument parser
 - `draw.zig`: Provide a canvas context 'like' interface for drawing
 - `io-adapter`:
   - Keyboard/mouse input + graphic output

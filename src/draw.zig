@@ -152,7 +152,7 @@ pub fn DrawContext(comptime pwidth: u32, comptime pheight: u32) type {
     }
     // Writes text at the specified position. x and y specifies the top left
     // corner of the text box to be printed.
-    pub fn printText(x: i16, y: i16, text: []const u8) void {
+    pub fn fillText(text: []const u8, x: i16, y: i16) void {
       // @setEvalBranchQuota(10000);
       const fontparams = comptime lbl: {
         // Check we deal with a P1 netpbm file (ASCII text)
