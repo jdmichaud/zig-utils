@@ -94,12 +94,13 @@ pub const OptionDescription = struct {
 };
 
 pub const ArgDescriptor = struct {
-  bufferSize: usize = 1024,
+  bufferSize: usize = 2048,
   name: []const u8,
   description: ?[]const u8 = null,
   withHelp: bool = true,
   version: ?[]const u8 = null,
   expectArgs: []const []const u8 = &[_][]const u8{},
+  minNbArgs: usize = 0,
   options: []const OptionDescription,
 };
 
@@ -229,7 +230,8 @@ pub fn parser(argsDescriptor: ArgDescriptor) type {
         }
       }
 
-      if (argsStore.arguments.items.len != argsDescriptor.expectArgs.len) {
+      if ((argsDescriptor.minNbArgs != 0 and argsStore.arguments.items.len < argsDescriptor.minNbArgs) or
+        (argsDescriptor.minNbArgs == 0 and argsStore.arguments.items.len != argsDescriptor.expectArgs.len)) {
         stderr.print("error: incorrect number of arguments. Expected {} arguments, {} given.\n", .{
           argsDescriptor.expectArgs.len, argsStore.arguments.items.len,
         }) catch unreachable;
