@@ -6,11 +6,13 @@ pub fn load(pathname: []const u8) ![]align(4096) const u8 {
   defer file.close();
 
   const size = try file.getEndPos();
+  var map_type: std.posix.system.MAP = .{ .TYPE = .PRIVATE };
+  map_type.POPULATE = true;
   const buffer = try std.posix.mmap(
     null,
     size,
     std.posix.PROT.READ,
-    .{ .TYPE = .SHARED },
+    map_type,
     file.handle,
     0,
   );
