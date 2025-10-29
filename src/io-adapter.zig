@@ -355,6 +355,7 @@ pub const IOAdapter = struct {
   getEventFn: *const fn (*IOAdapter) ?InputEvent,
   drawImageFn: *const fn (*IOAdapter, []const u32, u16, u16, u16, u16) void,
   renderSceneFn: *const fn (*IOAdapter) void,
+  waitForKeyFn: *const fn (*IOAdapter) void,
 
   pub fn getEvent(adapter: *IOAdapter) ?InputEvent {
     return adapter.getEventFn(adapter);
@@ -366,6 +367,10 @@ pub const IOAdapter = struct {
 
   pub fn renderScene(adapter: *IOAdapter) void {
     return adapter.renderSceneFn(adapter);
+  }
+
+  pub fn waitForKey(adapter: *IOAdapter) void {
+    return adapter.waitForKeyFn(adapter);
   }
 };
 
@@ -419,6 +424,7 @@ pub const SDLAdapter = struct {
         .getEventFn = getEvent,
         .drawImageFn = drawImage,
         .renderSceneFn = renderScene,
+        .waitForKeyFn = waitForKey,
       },
     };
   }
@@ -533,5 +539,17 @@ pub const SDLAdapter = struct {
       std.posix.exit(0);
     }
     sdl.SDL_RenderPresent(self.renderer);
+  }
+
+  pub fn waitForKey(adapter: *IOAdapter) void {
+    _ = adapter;
+    var event: sdl.SDL_Event = undefined;
+    loop: switch (sdl.SDL_WaitEvent(&event)) {
+      1 => switch (event.type) {
+        sdl.SDL_KEYDOWN => return,
+        else => continue :loop sdl.SDL_WaitEvent(&event),
+      },
+      else => continue :loop sdl.SDL_WaitEvent(&event),
+    }
   }
 };
