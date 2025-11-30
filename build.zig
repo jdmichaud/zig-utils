@@ -34,12 +34,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const png_mod = b.addModule("png", .{
+        .root_source_file = b.path("src/png.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const imports: []const std.Build.Module.Import = &.{
         .{ .name = "clap", .module = clap_mod },
         .{ .name = "draw", .module = draw_mod },
         .{ .name = "ioAdapter", .module = io_adapter_mod },
         .{ .name = "misc", .module = misc_mod },
         .{ .name = "geometry", .module = geometry_mod },
+        .{ .name = "png", .module = png_mod },
     };
 
     add_example(b, "draw", "examples/draw.zig", "Run the draw example", imports, target, optimize);

@@ -1,8 +1,12 @@
 // zig build -freference-trace=8 draw -- line
+// zig build -freference-trace=8 draw -- fillPolygon
+// zig build -freference-trace=8 draw -- png
 const std = @import("std");
+const misc = @import("misc");
 const draw = @import("draw");
 const ioAdapter = @import("ioAdapter");
 const geometry = @import("geometry");
+const png = @import("png");
 
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
@@ -11,7 +15,7 @@ const Shape = enum {
     line,
     rect,
     fillrect,
-    fillcircle
+    fillcircle,
 };
 
 pub fn main() !void {
@@ -34,8 +38,90 @@ pub fn main() !void {
         try runPolygonExample(allocator, .stroke);
     } else if (std.mem.eql(u8, example, "fillPolygon")) {
         try runPolygonExample(allocator, .fill);
+    } else if (std.mem.eql(u8, example, "png")) {
+        if (args.len != 3) {
+            std.debug.print("Usage: {s} png <path/to/image.png>\n", .{args[0]});
+            return;
+        }
+        try runPngExample(allocator, args[2]);
     } else {
         std.debug.print("Unknown example: {s}\n", .{ example });
+    }
+}
+
+fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
+    const width = 800;
+    const height = 600;
+    const num_image = 100000;
+
+    var adapter = try ioAdapter.SDLAdapter.init(width, height);
+    defer adapter.deinit();
+
+    var context = try draw.DrawContext.init(allocator, width, height);
+
+    // Use a fixed seed for repeatable randomness
+    var prng = std.Random.DefaultPrng.init(12345);
+
+    // Load the PNG file
+    const input = try misc.load(image_path);
+    defer std.posix.munmap(input);
+    var output: [2_000_000]u8 = undefined;
+    @memset(&output, 0);
+    const header = try png.load_png(input, &output);
+    if (header.getColorType() != png.ColorType.truecolorAlpha) {
+        @panic("only support color type 6 PNG (RGBA)");
+    }
+    std.log.debug("header.getHeight() {}", .{ header.getHeight() });
+    std.log.debug("header.getWidth() {}", .{ header.getWidth() });
+    std.log.debug("header.getWidthInBytes() {}", .{ header.getWidthInBytes() });
+    std.log.debug("size in bytes {}", .{ header.getHeight() * header.getWidthInBytes() });
+    const imageData = draw.ImageData{
+        .width = header.getWidth(),
+        .height = header.getHeight(),
+        .pixel_format = draw.PixelFormat.RGBA8,
+        .data = output[0..header.getHeight() * header.getWidthInBytes()],
+    };
+
+    // const ppmfile = try std.fs.cwd().createFile("test.ppm", .{
+    //   .truncate = true, // does not work
+    // });
+    // try ppmfile.writer().print("P3\n{} {}\n255\n", .{ imageData.width, imageData.height });
+    // for (0..imageData.width * imageData.height) |p| {
+    //     const i = p * 4;
+    //     try ppmfile.writer().print("{} {} {}\n", .{ imageData.data[i], imageData.data[i + 1], imageData.data[i + 2] });
+    // }
+
+    var quit = false;
+    var i: u32 = 0;
+    var render_time: i128 = 0;
+    var ticks: usize = 0;
+    while (i < num_image and !quit) {
+        i += 1;
+        // Random position and size
+        const x = prng.random().intRangeAtMost(i16, 0, width - @as(i16, @intCast(imageData.width)));
+        const y = prng.random().intRangeAtMost(i16, 0, height - @as(i16, @intCast(imageData.height)));
+        // const dx = prng.random().intRangeAtMost(i16, 0, width);
+        // const dy = prng.random().intRangeAtMost(i16, 0, height);
+
+        context.putImageData(imageData, x, y);
+
+        quit = isQuit(&adapter.interface);
+
+        ticks += 1;
+        // Only go for 60fps
+        const now = std.time.nanoTimestamp();
+        if (now - render_time > 16000000) {
+            adapter.interface.drawImage(context.buffer, 0, 0, width, height);
+            adapter.interface.renderScene();
+            render_time = now;
+            try stdout.print("{} blits/frames\n", .{ ticks });
+            ticks = 0;
+        }
+    }
+
+    if (!quit) {
+        try stdout.print("Press any key to exit...\n", .{});
+        _ = adapter.interface.waitForKey();
     }
 }
 
