@@ -65,21 +65,21 @@ fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
     // Load the PNG file
     const input = try misc.load(image_path);
     defer std.posix.munmap(input);
-    var output: [2_000_000]u8 = undefined;
-    @memset(&output, 0);
-    const header = try png.load_png(input, &output);
-    if (header.getColorType() != png.ColorType.truecolorAlpha) {
+    var png_image_data = try png.load_png(allocator, input);
+    defer png_image_data.deinit(allocator);
+
+    if (png_image_data.header.getColorType() != png.ColorType.truecolorAlpha) {
         @panic("only support color type 6 PNG (RGBA)");
     }
-    std.log.debug("header.getHeight() {}", .{ header.getHeight() });
-    std.log.debug("header.getWidth() {}", .{ header.getWidth() });
-    std.log.debug("header.getWidthInBytes() {}", .{ header.getWidthInBytes() });
-    std.log.debug("size in bytes {}", .{ header.getHeight() * header.getWidthInBytes() });
+    std.log.debug("header.getHeight() {}", .{ png_image_data.header.getHeight() });
+    std.log.debug("header.getWidth() {}", .{ png_image_data.header.getWidth() });
+    std.log.debug("header.getWidthInBytes() {}", .{ png_image_data.header.getWidthInBytes() });
+    std.log.debug("size in bytes {}", .{ png_image_data.header.getHeight() * png_image_data.header.getWidthInBytes() });
     const imageData = draw.ImageData{
-        .width = header.getWidth(),
-        .height = header.getHeight(),
+        .width = png_image_data.header.getWidth(),
+        .height = png_image_data.header.getHeight(),
         .pixel_format = draw.PixelFormat.RGBA8,
-        .data = output[0..header.getHeight() * header.getWidthInBytes()],
+        .data = png_image_data.data,
     };
 
     // const ppmfile = try std.fs.cwd().createFile("test.ppm", .{
@@ -110,7 +110,7 @@ fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
         ticks += 1;
         // Only go for 60fps
         const now = std.time.nanoTimestamp();
-        if (now - render_time > 16000000) {
+        if (i >= num_image or quit or now - render_time > 16000000) {
             adapter.interface.drawImage(context.buffer, 0, 0, width, height);
             adapter.interface.renderScene();
             render_time = now;

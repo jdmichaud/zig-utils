@@ -53,13 +53,13 @@ const ChunkType = enum {
 };
 
 const IhdrHeader = packed struct {
-    width: u32,
-    height: u32,
-    bit_depth: u8, // 1, 2, 4, 8, or 16
-    color_type: u8, // 0, 2, 3, 4, or 6
-    compression_method: u8,
-    filter_method: u8,
-    interlace_method: u8, // 0 "no interlace" or 1 "Adam7 interlace"
+    width: u32 = 0,
+    height: u32 = 0,
+    bit_depth: u8 = 0, // 1, 2, 4, 8, or 16
+    color_type: u8 = 0, // 0, 2, 3, 4, or 6
+    compression_method: u8 = 0,
+    filter_method: u8 = 0,
+    interlace_method: u8 = 0, // 0 "no interlace" or 1 "Adam7 interlace"
 
     const Self = @This();
 
@@ -138,13 +138,14 @@ const FixedHuffmanTable: []HuffmanLengthRange = &[_]HuffmanLengthRange{
     .{ .symbolStart = 280, .symbolEnd = 287, .codeLength = 8 },
 };
 
-fn unzip(data: []const u8, output: []u8) !usize {
-    var stream = std.io.fixedBufferStream(data[0..]);
+fn unzip(allocator: std.mem.Allocator, data: std.ArrayList(u8)) ![]u8 {
+    var output = std.ArrayList(u8).init(allocator);
+    var stream = std.io.fixedBufferStream(data.items[0..]);
     const reader = stream.reader();
     var dcp = std.compress.zlib.decompressor(reader);
-    std.log.debug("data length {}", .{ data.len });
     // Decompress
-    return try dcp.reader().readAll(output[0..]);
+    try dcp.reader().readAllArrayList(&output, 20_000_000_000); // not sure why we need a max value here...
+    return try output.toOwnedSlice();
 }
 
 const FilteringType = enum(u8) {
@@ -172,7 +173,7 @@ fn paeth_predictor(a: u8, b: u8, c: u8) u8 {
 
 // PNG defiltering as described here: https://en.wikipedia.org/wiki/PNG#Filtering
 // Remember that filtering is applied on bytes not pixels.
-fn defiltering(header: IhdrHeader, output: []u8) !void {
+fn defiltering(header: IhdrHeader, output: []u8) !usize {
     var line_index: usize = 0; // points at the beginning of the line to defilter
     var write_index: usize = 0; // points at where to write
     const line_width = header.getWidthInBytes();
@@ -233,18 +234,34 @@ fn defiltering(header: IhdrHeader, output: []u8) !void {
     if (write_index != line_width * header.getHeight()) {
         return Error.InconsistentSize;
     }
+
+    return write_index;
 }
 
+pub const PngImageData = struct {
+    header: IhdrHeader,
+    data: []u8,
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        allocator.free(self.data);
+    }
+};
+
 // PNG → IDAT → zlib → DEFLATE
-pub fn load_png(input: []const u8, output: []u8) !IhdrHeader {
+pub fn load_png(allocator: std.mem.Allocator, input: []const u8) !PngImageData {
+    var idat_data = std.ArrayList(u8).init(allocator);
+    defer idat_data.deinit();
+    var header: IhdrHeader = .{};
+
     if (!std.mem.eql(u8, input[0..8], &MAGIC)) {
         return Error.WrongMagic;
     }
 
     var i = MAGIC.len;
-    var header: ?*align(1) const IhdrHeader = null;
     var end = false;
-    var output_index: usize = 0;
+    var found_header = false;
     while (i < input.len and !end) {
         const chunk_header: *align(1) const ChunkHeader = @alignCast(@ptrCast(input[i..i + @sizeOf(ChunkHeader)].ptr));
         std.log.debug("chunk_type {s} chunk_length 0x{x}", .{ chunk_header.chunk_type, chunk_header.getLength() });
@@ -252,22 +269,24 @@ pub fn load_png(input: []const u8, output: []u8) !IhdrHeader {
         if (chunk_header.getType()) |chunk_type| {
             switch (chunk_type) {
                 .IHDR => {
-                    header = @alignCast(@ptrCast(data[0..13].ptr));
+                    found_header = true;
+                    const hdr_bytes: [*]u8 = @ptrCast(&header);
+                    @memcpy(hdr_bytes, data[0..13]);
                     std.log.debug("IHDR width {} height {} bit depth {} color type {} compression method {}", .{
-                        header.?.getWidth(),
-                        header.?.getHeight(),
-                        header.?.bit_depth,
-                        header.?.getColorType(),
-                        header.?.compression_method,
+                        header.getWidth(),
+                        header.getHeight(),
+                        header.bit_depth,
+                        header.getColorType(),
+                        header.compression_method,
                     });
-                    if (header.?.interlace_method != 0) {
+                    if (header.interlace_method != 0) {
                         return Error.UnsupportedInterlaceMethod;
                     }
                 },
                 .PLTE => {},
                 .IEND => end = true,
                 .IDAT => {
-                    output_index += try unzip(data, output[output_index..]);
+                    try idat_data.appendSlice(data);
                 },
                 else => {
                     std.log.debug("chunk {any} ignored", .{ chunk_header.getType() });
@@ -283,9 +302,15 @@ pub fn load_png(input: []const u8, output: []u8) !IhdrHeader {
         std.log.warn("png stream finished without a END chunk", .{});
     }
 
-    if (header) |h| {
-        try defiltering(h.*, output[0..output_index]);
-        return h.*;
+    if (found_header) {
+        const uncompressed_data = try unzip(allocator, idat_data);
+        const defiltered_size = try defiltering(header, uncompressed_data);
+
+        try idat_data.resize(defiltered_size);
+        return PngImageData{
+            .header = header,
+            .data = uncompressed_data,
+        };
     }
 
     return Error.NoPngHeader;
