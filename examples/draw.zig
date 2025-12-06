@@ -58,6 +58,9 @@ fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
     defer adapter.deinit();
 
     var context = try draw.DrawContext.init(allocator, width, height);
+    context.alpha = true;
+    // to check the transparency
+    misc.x11checkerboard(width, height, context.buffer);
 
     // Use a fixed seed for repeatable randomness
     var prng = std.Random.DefaultPrng.init(12345);
@@ -68,28 +71,12 @@ fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
     var png_image_data = try png.load_png(allocator, input);
     defer png_image_data.deinit(allocator);
 
-    if (png_image_data.header.getColorType() != png.ColorType.truecolorAlpha) {
-        @panic("only support color type 6 PNG (RGBA)");
-    }
-    std.log.debug("header.getHeight() {}", .{ png_image_data.header.getHeight() });
-    std.log.debug("header.getWidth() {}", .{ png_image_data.header.getWidth() });
-    std.log.debug("header.getWidthInBytes() {}", .{ png_image_data.header.getWidthInBytes() });
-    std.log.debug("size in bytes {}", .{ png_image_data.header.getHeight() * png_image_data.header.getWidthInBytes() });
     const imageData = draw.ImageData{
         .width = png_image_data.header.getWidth(),
         .height = png_image_data.header.getHeight(),
         .pixel_format = draw.PixelFormat.RGBA8,
         .data = png_image_data.data,
     };
-
-    // const ppmfile = try std.fs.cwd().createFile("test.ppm", .{
-    //   .truncate = true, // does not work
-    // });
-    // try ppmfile.writer().print("P3\n{} {}\n255\n", .{ imageData.width, imageData.height });
-    // for (0..imageData.width * imageData.height) |p| {
-    //     const i = p * 4;
-    //     try ppmfile.writer().print("{} {} {}\n", .{ imageData.data[i], imageData.data[i + 1], imageData.data[i + 2] });
-    // }
 
     var quit = false;
     var i: u32 = 0;
@@ -98,10 +85,10 @@ fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
     while (i < num_image and !quit) {
         i += 1;
         // Random position and size
-        const x = prng.random().intRangeAtMost(i16, 0, width - @as(i16, @intCast(imageData.width)));
-        const y = prng.random().intRangeAtMost(i16, 0, height - @as(i16, @intCast(imageData.height)));
-        // const dx = prng.random().intRangeAtMost(i16, 0, width);
-        // const dy = prng.random().intRangeAtMost(i16, 0, height);
+        // const x = prng.random().intRangeAtMost(i16, 0, width - @as(i16, @intCast(imageData.width)));
+        // const y = prng.random().intRangeAtMost(i16, 0, height - @as(i16, @intCast(imageData.height)));
+        const x = prng.random().intRangeAtMost(i16, -@as(i16, @intCast(imageData.width)), width);
+        const y = prng.random().intRangeAtMost(i16, -@as(i16, @intCast(imageData.height)), height);
 
         context.putImageData(imageData, x, y);
 

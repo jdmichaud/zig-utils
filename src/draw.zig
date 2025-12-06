@@ -42,6 +42,7 @@ pub const DrawContext = struct {
   strokeStyle: u32 = 0xFFFFFFFF,
   fillStyle: u32 = 0xFFFFFFFF,
   thickness: u32 = 0,
+  alpha: bool = false,
 
   transformMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
   stack: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
@@ -355,64 +356,112 @@ pub const DrawContext = struct {
     self.path_command_stack.clearRetainingCapacity();
   }
 
-  // FIXME: Deal with coordinates outside of the buffer
-  // FIXME: Deal with buffer overflow
+  // pub fn putImageData(self: *Self, imageData: ImageData, dx: isize, dy: isize) void {
+  //   if (dx <= -@as(i64, @intCast(imageData.width)) or dx >= self.width or
+  //       dy <= -@as(i64, @intCast(imageData.height)) or dy >= self.height) {
+  //     return;
+  //   }
+
+  //   const bounded_dx = @min(self.width - 1, @max(0, dx));
+  //   const bounded_dy = @min(self.height - 1, @max(0, dy));
+
+  //   const sx: usize = if (dx >= 0) 0 else @abs(dx);
+  //   const sy: usize = if (dy >= 0) 0 else @abs(dy);
+
+  //   const width = if (dx >= 0)
+  //     if (bounded_dx + imageData.width < self.width)
+  //       imageData.width
+  //     else
+  //       imageData.width -| ((bounded_dx + imageData.width) % self.width)
+  //   else
+  //     imageData.width - @abs(dx);
+  //   const height = if (dy >= 0)
+  //     if (bounded_dy + imageData.height < self.height)
+  //       imageData.height
+  //     else
+  //       imageData.height -| ((bounded_dy + imageData.height) % self.height)
+  //   else
+  //     imageData.height - @abs(dy);
+
+  //   std.log.debug("dx {} dy {} sx {} sy {} width {} height {}", .{ dx, dy, sx, sy, width, height });
+  //   self.putImageData2(imageData, bounded_dx, bounded_dy, sx, sy, width, height);
+  // }
+
+  // A little slower be easier to understand
   pub fn putImageData(self: *Self, imageData: ImageData, dx: isize, dy: isize) void {
+      if (dx >= self.width or
+          dy >= self.height or
+          dx <= -@as(i64, @intCast(imageData.width)) or
+          dy <= -@as(i64, @intCast(imageData.height))) {
+          return;
+      }
+
+      const sx: usize = if (dx < 0) @intCast(-dx) else 0;
+      const sy: usize = if (dy < 0) @intCast(-dy) else 0;
+
+      const dest_x: usize = if (dx < 0) 0 else @intCast(dx);
+      const dest_y: usize = if (dy < 0) 0 else @intCast(dy);
+
+      const width = @min(imageData.width - sx, self.width - dest_x);
+      const height = @min(imageData.height - sy, self.height - dest_y);
+
+      self.putImageData2(imageData, dest_x, dest_y, sx, sy, width, height);
+  }
+
+  pub fn putImageData2(self: *Self, imageData: ImageData, dx: usize, dy: usize,
+    sx: usize, sy: usize, width: usize, height: usize) void {
     const startBuffer: usize = @intCast(dx + dy * self.width);
-    switch (imageData.pixel_format) {
-      PixelFormat.RGB8 => {
-        const ptr_u32: [*]const u32 = @ptrCast(@alignCast(imageData.data.ptr));
-        const rgbadata = ptr_u32[0 .. imageData.data.len / 4];
-        for (0..imageData.height) |j| {
-          const bufferStride = j * self.width;
-          const imageDataStride = j * imageData.width;
-          @memcpy(
-            self.buffer[startBuffer + bufferStride..startBuffer + bufferStride + imageData.width],
-            rgbadata[imageDataStride..imageDataStride + imageData.width]
-          );
-        }
-      },
-      PixelFormat.RGBA8 => {
-        // raw pointers to avoid slice overhead in the loop
-        const dest_ptr: [*]u32 = self.buffer.ptr;
-        const src_ptr: [*]const u32 = @ptrCast(@alignCast(imageData.data.ptr));
-        const start_buffer: usize = @intCast(dx + dy * self.width);
-        for (0..imageData.height) |j| {
-          var buffer_index = start_buffer + j * self.width;
-          var image_index = j * imageData.width;
-          for (0..imageData.width) |i| {
-            _ = i;
-            defer {
-              buffer_index += 1;
-              image_index += 1;
-            }
-
-            const fg_packed = src_ptr[image_index];
-            const bg_packed = dest_ptr[buffer_index];
-            // We expand to u16 immediately to prevent overflow during multiply
-            const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
-            const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
-            const alpha_val = fg[3];
-            // Optimization: If alpha is 0, skip. If 255, simple copy.
-            if (alpha_val == 0) continue;
-            if (alpha_val == 255) {
-                dest_ptr[buffer_index] = fg_packed;
-                continue;
-            }
-
-            const a: @Vector(4, u16) = @splat(alpha_val);
-            const max: @Vector(4, u16) = @splat(255);
-            const inv_a = max - a;
-            // (bg * inv_a + fg * a) / 255
-            const tmp = bg * inv_a + fg * a;
-            const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
-
-            const result_8: @Vector(4, u8) = @intCast(result_16);
-            // 7. Store full pixel (Single instruction store)
-            dest_ptr[buffer_index] = @bitCast(result_8);
+    if (!self.alpha) {
+      const ptr_u32: [*]const u32 = @ptrCast(@alignCast(imageData.data.ptr));
+      const rgbadata = ptr_u32[0 .. imageData.data.len / 4];
+      for (0..height) |j| {
+        const bufferStride = j * self.width;
+        const imageDataStride = sx + (sy + j) * imageData.width;
+        @memcpy(
+          self.buffer[startBuffer + bufferStride..startBuffer + bufferStride + width],
+          rgbadata[imageDataStride..imageDataStride + width]
+        );
+      }
+    } else {
+      // raw pointers to avoid slice overhead in the loop
+      const dest_ptr: [*]u32 = self.buffer.ptr;
+      const src_ptr: [*]const u32 = @ptrCast(@alignCast(imageData.data.ptr));
+      const start_buffer: usize = @intCast(dx + dy * self.width);
+      for (0..height) |j| {
+        var buffer_index = start_buffer + j * self.width;
+        var image_index = sx + (sy + j) * imageData.width;
+        for (0..width) |i| {
+          _ = i;
+          defer {
+            buffer_index += 1;
+            image_index += 1;
           }
+
+          const fg_packed = src_ptr[image_index];
+          const bg_packed = dest_ptr[buffer_index];
+          // We expand to u16 immediately to prevent overflow during multiply
+          const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
+          const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
+          const alpha_val = fg[3];
+          // Optimization: If alpha is 0, skip. If 255, simple copy.
+          if (alpha_val == 0) continue;
+          if (alpha_val == 255) {
+              dest_ptr[buffer_index] = fg_packed;
+              continue;
+          }
+
+          const a: @Vector(4, u16) = @splat(alpha_val);
+          const max: @Vector(4, u16) = @splat(255);
+          const inv_a = max - a;
+          // (bg * inv_a + fg * a) / 255
+          const tmp = bg * inv_a + fg * a;
+          const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
+
+          const result_8: @Vector(4, u8) = @intCast(result_16);
+          // 7. Store full pixel (Single instruction store)
+          dest_ptr[buffer_index] = @bitCast(result_8);
         }
-      },
+      }
     }
   }
 
