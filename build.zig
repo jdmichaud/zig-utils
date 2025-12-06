@@ -40,13 +40,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zlm_mod = b.addModule("zlm", .{
+        .root_source_file = b.path("src/zlm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const imports: []const std.Build.Module.Import = &.{
         .{ .name = "clap", .module = clap_mod },
         .{ .name = "draw", .module = draw_mod },
-        .{ .name = "ioAdapter", .module = io_adapter_mod },
+        .{ .name = "io_adapter", .module = io_adapter_mod },
         .{ .name = "misc", .module = misc_mod },
         .{ .name = "geometry", .module = geometry_mod },
         .{ .name = "png", .module = png_mod },
+        .{ .name = "zlm", .module = zlm_mod },
     };
 
     add_example(b, "draw", "examples/draw.zig", "Run the draw example", imports, target, optimize);
@@ -71,7 +78,7 @@ pub fn add_test(b: *std.Build, command: []const u8, mod: *std.Build.Module) void
 pub fn add_example(b: *std.Build, command: []const u8, source: []const u8,
     help: []const u8, imports: []const std.Build.Module.Import,
     target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
-    const exe_mod = b.addExecutable(.{
+    const exe = b.addExecutable(.{
         .name = command,
         .root_module = b.createModule(.{
             .root_source_file = b.path(source),
@@ -80,10 +87,10 @@ pub fn add_example(b: *std.Build, command: []const u8, source: []const u8,
             .imports = imports,
         }),
     });
-    exe_mod.linkSystemLibrary("SDL2");
-    exe_mod.linkSystemLibrary("c");
-    b.installArtifact(exe_mod);
-    const run_cmd = b.addRunArtifact(exe_mod);
+    exe.linkSystemLibrary("SDL2");
+    exe.linkSystemLibrary("c");
+    b.installArtifact(exe);
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);

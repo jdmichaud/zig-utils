@@ -1,10 +1,10 @@
 // zig build -freference-trace=8 draw -- line
 // zig build -freference-trace=8 draw -- fillPolygon
-// zig build -freference-trace=8 draw -- png
+// zig build -freference-trace=8 draw -- png examples/sprite.png
 const std = @import("std");
 const misc = @import("misc");
 const draw = @import("draw");
-const ioAdapter = @import("ioAdapter");
+const ioAdapter = @import("io_adapter");
 const geometry = @import("geometry");
 const png = @import("png");
 

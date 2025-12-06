@@ -357,6 +357,8 @@ pub const IOAdapter = struct {
   renderSceneFn: *const fn (*IOAdapter) void,
   waitForKeyFn: *const fn (*IOAdapter) void,
 
+  // Check if an event has been raised and return it.
+  // If not, return null.
   pub fn getEvent(adapter: *IOAdapter) ?InputEvent {
     return adapter.getEventFn(adapter);
   }
