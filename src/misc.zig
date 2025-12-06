@@ -85,6 +85,7 @@ pub fn writePam32(width: usize, height: usize, pixels: []const u8, filepath: []c
   try file.writeAll(pixels);
 }
 
+// Create the X11 checkerboard background pattern in an RGBA buffer
 pub fn x11checkerboard(width: usize, height: usize, output: []u32) void {
   const back_lsb: [4]u8 = [4]u8{0x88, 0x22, 0x44, 0x11};
   // const back_msb: [4]u8 = [4]u8{0x11, 0x44, 0x22, 0x88};
@@ -93,4 +94,19 @@ pub fn x11checkerboard(width: usize, height: usize, output: []u32) void {
       output[j * width + i] = (@as(u32, back_lsb[0]) * 0x00010101) | 0xFF000000;
     }
   }
+}
+
+// int to int (T) cast
+pub fn asInt(comptime T: type, integer: anytype) T {
+  return @as(T, @intCast(integer));
+}
+
+// From an int to a float T
+pub fn asFloat(comptime T: type, integer: anytype) T {
+  return @as(T, @floatFromInt(integer));
+}
+
+// From an int to a f32
+pub fn asf32(integer: anytype) f32 {
+  return asFloat(f32, @intCast(integer));
 }
