@@ -75,13 +75,13 @@ pub const DrawContext = struct {
   //                       a c e
   // The transformation matrix is described by: [ b d f ]
   //                       0 0 1
-  pub fn setTransform(self: Self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) void {
+  pub fn setTransform(self: *Self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) void {
     self.transformMatrix = .{ a, b, c, d, e, f };
   }
   // multiplies the current transformation with the matrix described by the
   // arguments of this method. This lets you scale, rotate, translate (move),
   // and skew the context.
-  pub fn transform(self: Self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) void {
+  pub fn transform(self: *Self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) void {
     self.transformMatrix[_a] = self.transformMatrix[_a] * a + self.transformMatrix[_c] * b;
     self.transformMatrix[_b] = self.transformMatrix[_b] * a + self.transformMatrix[_d] * b;
     self.transformMatrix[_c] = self.transformMatrix[_a] * c + self.transformMatrix[_c] * d;

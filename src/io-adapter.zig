@@ -325,6 +325,7 @@ pub const Mod = enum(u16) {
   LSHIFT = 1,
   RSHIFT = 2,
   LCTRL = 64,
+  RCTRL = 128,
 };
 
 pub const KeyEvent = struct {
@@ -518,6 +519,7 @@ pub const SDLAdapter = struct {
       }
       @setRuntimeSafety(true);
     } else {
+      // Nearest
       @setRuntimeSafety(false); // Too slow otherwise
       const ifactor: f32 = @as(f32, @floatFromInt(sWidth)) / @as(f32, @floatFromInt(self.width));
       const jfactor: f32 = @as(f32, @floatFromInt(sHeight)) / @as(f32, @floatFromInt(self.height));
