@@ -340,6 +340,7 @@ pub const EventType = enum {
   MouseUp,
   MouseWheel,
   KeyDown,
+  KeyUp,
 };
 
 pub const InputEvent = union(EventType) {
@@ -349,6 +350,7 @@ pub const InputEvent = union(EventType) {
   MouseUp: MouseButtonEvent,
   MouseWheel: MouseWheel,
   KeyDown: KeyEvent,
+  KeyUp: KeyEvent,
 };
 
 pub const IOAdapter = struct {
@@ -448,6 +450,15 @@ pub const SDLAdapter = struct {
         sdl.SDL_KEYDOWN => {
           return InputEvent{
             .KeyDown = KeyEvent{
+              .mod = event.key.keysym.mod,
+              .scancode = @enumFromInt(event.key.keysym.scancode),
+              .keycode = Keycode.None,
+            },
+          };
+        },
+        sdl.SDL_KEYUP => {
+          return InputEvent{
+            .KeyUp = KeyEvent{
               .mod = event.key.keysym.mod,
               .scancode = @enumFromInt(event.key.keysym.scancode),
               .keycode = Keycode.None,
