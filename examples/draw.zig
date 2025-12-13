@@ -1,12 +1,14 @@
 // zig build -freference-trace=8 draw -- line
 // zig build -freference-trace=8 draw -- fillPolygon
 // zig build -freference-trace=8 draw -- png examples/sprite.png
+// zig build -freference-trace=8 draw -- draw examples/sprite.png
 const std = @import("std");
 const misc = @import("misc");
 const draw = @import("draw");
 const ioAdapter = @import("io_adapter");
 const geometry = @import("geometry");
 const png = @import("png");
+const zlm = @import("zlm");
 
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
@@ -44,8 +46,92 @@ pub fn main() !void {
             return;
         }
         try runPngExample(allocator, args[2]);
+    } else if (std.mem.eql(u8, example, "draw")) {
+        if (args.len != 3) {
+            std.debug.print("Usage: {s} draw <path/to/image.png>\n", .{args[0]});
+            return;
+        }
+        try runDrawExample(allocator, args[2]);
     } else {
         std.debug.print("Unknown example: {s}\n", .{ example });
+    }
+}
+
+fn runDrawExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
+    const width = 800;
+    const height = 600;
+    const num_image = 100000;
+    // const num_image = 1;
+
+    var adapter = try ioAdapter.SDLAdapter.init(width, height);
+    defer adapter.deinit();
+
+    var context = try draw.DrawContext.init(allocator, width, height);
+    context.alpha = true;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "medium";
+    // to check the transparency
+    misc.x11checkerboard(width, height, context.buffer);
+
+    // Use a fixed seed for repeatable randomness
+    var prng = std.Random.DefaultPrng.init(12345);
+
+    // Load the PNG file
+    const input = try misc.load(image_path);
+    defer std.posix.munmap(input);
+    var png_image_data = try png.load_png(allocator, input);
+    defer png_image_data.deinit(allocator);
+
+    const imageData = draw.ImageData{
+        .width = png_image_data.header.getWidth(),
+        .height = png_image_data.header.getHeight(),
+        .pixel_format = draw.PixelFormat.RGBA8,
+        .data = png_image_data.data,
+    };
+
+    var quit = false;
+    var i: u32 = 0;
+    var render_time: i128 = 0;
+    const start_time = std.time.nanoTimestamp();
+    var ticks: usize = 0;
+    while (i < num_image and !quit) {
+        i += 1;
+        // Random position and size
+        const x = prng.random().intRangeAtMost(i16, -@as(i16, @intCast(imageData.width)), width);
+        const y = prng.random().intRangeAtMost(i16, -@as(i16, @intCast(imageData.height)), height);
+        const angle = prng.random().float(f32) * std.math.pi;
+        const zoom_factor = prng.random().float(f32) * 1.4 + 0.01;
+        // _ = prng;
+        // const x = 100;
+        // const y = 100;
+        // const angle = std.math.pi / 2.0;
+        // const zoom_factor = 2;
+
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.translate(misc.asf32(x) + misc.asf32(imageData.width) / 2, misc.asf32(y) + misc.asf32(imageData.height) / 2);
+        context.rotate(angle);
+        context.scale(zoom_factor, zoom_factor);
+        context.drawImage(imageData, -@as(i32, @intCast(imageData.width / 2)), -@as(i32, @intCast(imageData.height / 2)));
+
+        quit = isQuit(&adapter.interface);
+
+        ticks += 1;
+        // Only go for 60fps
+        const now = std.time.nanoTimestamp();
+        if (i >= num_image or quit or now - render_time > 16000000) {
+            adapter.interface.drawImage(context.buffer, 0, 0, width, height);
+            adapter.interface.renderScene();
+            render_time = now;
+            try stdout.print("{} blits/frames\n", .{ ticks });
+            ticks = 0;
+        }
+    }
+
+    try stdout.print("Done in {}ns...\n", .{ @divTrunc(std.time.nanoTimestamp() - start_time, 1000000) });
+
+    if (!quit) {
+        try stdout.print("Press any key to exit...\n", .{});
+        _ = adapter.interface.waitForKey();
     }
 }
 

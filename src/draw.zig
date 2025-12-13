@@ -1,3 +1,4 @@
+// zig test -freference-trace=8 src/draw.zig
 const std = @import("std");
 
 const fontfile = @embedFile("dos_8x8_font_white.pbm");
@@ -31,6 +32,12 @@ pub const ImageData = struct {
   data: []const u8,
 };
 
+const InterpolationType = enum {
+  nearest,
+  linear,
+  cubic,
+};
+
 pub const DrawContext = struct {
   const Self = @This();
 
@@ -43,6 +50,9 @@ pub const DrawContext = struct {
   fillStyle: u32 = 0xFFFFFFFF,
   thickness: u32 = 0,
   alpha: bool = false,
+  // For now, always considered false
+  imageSmoothingEnabled: bool = false,
+  imageSmoothingQuality: []const u8 = "medium",
 
   transformMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
   stack: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
@@ -72,9 +82,9 @@ pub const DrawContext = struct {
   // resets (overrides) the current transformation to the identity matrix, and
   // then invokes a transformation described by the arguments of this method.
   // This lets you scale, rotate, translate (move), and skew the context.
-  //                       a c e
+  //                                              a c e
   // The transformation matrix is described by: [ b d f ]
-  //                       0 0 1
+  //                                              0 0 1
   pub fn setTransform(self: *Self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) void {
     self.transformMatrix = .{ a, b, c, d, e, f };
   }
@@ -82,16 +92,72 @@ pub const DrawContext = struct {
   // arguments of this method. This lets you scale, rotate, translate (move),
   // and skew the context.
   pub fn transform(self: *Self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) void {
-    self.transformMatrix[_a] = self.transformMatrix[_a] * a + self.transformMatrix[_c] * b;
-    self.transformMatrix[_b] = self.transformMatrix[_b] * a + self.transformMatrix[_d] * b;
-    self.transformMatrix[_c] = self.transformMatrix[_a] * c + self.transformMatrix[_c] * d;
-    self.transformMatrix[_d] = self.transformMatrix[_b] * c + self.transformMatrix[_d] * d;
-    self.transformMatrix[_e] = self.transformMatrix[_a] * e + self.transformMatrix[_c] * f + self.transformMatrix[_e] * 1;
-    self.transformMatrix[_f] = self.transformMatrix[_b] * e + self.transformMatrix[_d] * f + self.transformMatrix[_f] * 1;
+    const tmp_a = self.transformMatrix[_a] * a + self.transformMatrix[_c] * b;
+    const tmp_b = self.transformMatrix[_b] * a + self.transformMatrix[_d] * b;
+    const tmp_c = self.transformMatrix[_a] * c + self.transformMatrix[_c] * d;
+    const tmp_d = self.transformMatrix[_b] * c + self.transformMatrix[_d] * d;
+    const tmp_e = self.transformMatrix[_a] * e + self.transformMatrix[_c] * f + self.transformMatrix[_e] * 1;
+    const tmp_f = self.transformMatrix[_b] * e + self.transformMatrix[_d] * f + self.transformMatrix[_f] * 1;
+    self.transformMatrix[_a] = tmp_a;
+    self.transformMatrix[_b] = tmp_b;
+    self.transformMatrix[_c] = tmp_c;
+    self.transformMatrix[_d] = tmp_d;
+    self.transformMatrix[_e] = tmp_e;
+    self.transformMatrix[_f] = tmp_f;
+  }
+  // Apply a rotation by transformaing the matrix.
+  // angle: The rotation angle, clockwise in radians. You can use
+  // degree * Math.PI / 180 to calculate a radian from a degree.
+  pub fn rotate(self: *Self, angle: f32) void {
+    const cos = std.math.cos(angle);
+    const sin = std.math.sin(angle);
+    self.transform(cos, sin, -sin, cos, 0, 0);
+  }
+  // Apply a scaling matrix
+  // x: Scaling factor in the horizontal direction. A negative value flips
+  // pixels across the vertical axis. A value of 1 results in no horizontal
+  // scaling.
+  // y: Scaling factor in the vertical direction. A negative value
+  // flips pixels across the horizontal axis. A value of 1 results in no
+  // vertical scaling.
+  pub fn scale(self: *Self, x: f32, y: f32) void {
+    self.transform(x, 0, 0, y, 0, 0);
   }
   // retrieves the current transformation matrix being applied to the context.
   pub fn getTransform(self: Self) [6]f32 {
     return self.transformMatrix;
+  }
+  // Get the inverse of the transform (canvas → user)
+  //
+  // det = a*d - b*c
+  // if det == 0: return   // non-invertible
+  //
+  // invDet = 1 / det
+  //
+  // a' =  d * invDet
+  // b' = -b * invDet
+  // c' = -c * invDet
+  // d' =  a * invDet
+  // e' = (c*f - d*e) * invDet
+  // f' = (b*e - a*f) * invDet
+  //
+  // Inverse:
+  // | a' c' e' |
+  // | b' d' f' |
+  // | 0  0  1  |
+  fn getInverse(self: Self, inverse: *[6]f32) !void {
+    const t = self.transformMatrix;
+    const det = t[_a] * t[_d] - t[_b] * t[_c];
+    if (det < 0.000001) return error.NotInvertible;
+
+    const inv_det = 1 / det;
+
+    inverse[_a] =  t[_d] * inv_det;
+    inverse[_b] = -t[_b] * inv_det;
+    inverse[_c] = -t[_c] * inv_det;
+    inverse[_d] =  t[_a] * inv_det;
+    inverse[_e] = (t[_c] * t[_f] - t[_d] * t[_e]) * inv_det;
+    inverse[_f] = (t[_b] * t[_e] - t[_a] * t[_f]) * inv_det;
   }
   // Saves the entire state of the canvas by pushing the current state onto a
   // stack.
@@ -112,7 +178,7 @@ pub const DrawContext = struct {
     self.transformMatrix = .{ 1, 0, 0, 1, 0, 0 };
   }
   // adds a translation transformation to the current matrix.
-  pub fn translate(self: Self, x: f32, y: f32) void {
+  pub fn translate(self: *Self, x: f32, y: f32) void {
     self.transformMatrix[_e] += x;
     self.transformMatrix[_f] += y;
   }
@@ -356,6 +422,7 @@ pub const DrawContext = struct {
     self.path_command_stack.clearRetainingCapacity();
   }
 
+  // A little faster but more complicated implementation
   // pub fn putImageData(self: *Self, imageData: ImageData, dx: isize, dy: isize) void {
   //   if (dx <= -@as(i64, @intCast(imageData.width)) or dx >= self.width or
   //       dy <= -@as(i64, @intCast(imageData.height)) or dy >= self.height) {
@@ -439,35 +506,404 @@ pub const DrawContext = struct {
 
           const fg_packed = src_ptr[image_index];
           const bg_packed = dest_ptr[buffer_index];
-          // We expand to u16 immediately to prevent overflow during multiply
-          const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
-          const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
-          const alpha_val = fg[3];
-          // Optimization: If alpha is 0, skip. If 255, simple copy.
-          if (alpha_val == 0) continue;
-          if (alpha_val == 255) {
-              dest_ptr[buffer_index] = fg_packed;
-              continue;
-          }
+          // // We expand to u16 immediately to prevent overflow during multiply
+          // const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
+          // const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
+          // const alpha_val = fg[3];
+          // // Optimization: If alpha is 0, skip. If 255, simple copy.
+          // if (alpha_val == 0) continue;
+          // if (alpha_val == 255) {
+          //     dest_ptr[buffer_index] = fg_packed;
+          //     continue;
+          // }
 
-          const a: @Vector(4, u16) = @splat(alpha_val);
-          const max: @Vector(4, u16) = @splat(255);
-          const inv_a = max - a;
-          // (bg * inv_a + fg * a) / 255
-          const tmp = bg * inv_a + fg * a;
-          const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
+          // const a: @Vector(4, u16) = @splat(alpha_val);
+          // const max: @Vector(4, u16) = @splat(255);
+          // const inv_a = max - a;
+          // // (bg * inv_a + fg * a) / 255
+          // const tmp = bg * inv_a + fg * a;
+          // const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
 
-          const result_8: @Vector(4, u8) = @intCast(result_16);
+          // const result_8: @Vector(4, u8) = @intCast(result_16);
+          const result_8 = blend(bg_packed, fg_packed);
           // 7. Store full pixel (Single instruction store)
-          dest_ptr[buffer_index] = @bitCast(result_8);
+          dest_ptr[buffer_index] = result_8;
         }
       }
     }
   }
 
+  fn blend(bg_packed: u32, fg_packed: u32) u32 {
+    // We expand to u16 immediately to prevent overflow during multiply
+    const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
+    const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
+    const alpha_val = fg[3];
+    // Optimization: If alpha is 0, skip. If 255, simple copy.
+    if (alpha_val == 0) return bg_packed;
+    if (alpha_val == 255) {
+        return fg_packed;
+    }
+
+    const a: @Vector(4, u16) = @splat(alpha_val);
+    const max: @Vector(4, u16) = @splat(255);
+    const inv_a = max - a;
+    // (bg * inv_a + fg * a) / 255
+    const tmp = bg * inv_a + fg * a;
+    const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
+
+    const result_8: @Vector(4, u8) = @intCast(result_16);
+    return @bitCast(result_8);
+  }
+
+  // drawImage Rasterization Algorithm (Affine Canvas)
+  //
+  // Spaces:
+  // - Image space: source pixels
+  // - User space: drawImage(dx,dy,dw,dh)
+  // - Canvas space: device pixels
+  //
+  // Current transform M (user → canvas):
+  // | a c e |
+  // | b d f |
+  // | 0 0 1 |
+  //
+  // 1) Invert transform (canvas → user)
+  //
+  // see getInverse
+  //
+  // 2) Transform destination rect corners to canvas space
+  //
+  // P0 = M * (dx, dy)
+  // P1 = M * (dx + dw, dy)
+  // P2 = M * (dx, dy + dh)
+  // P3 = M * (dx + dw, dy + dh)
+  //
+  // 3) Compute canvas-space bounding box of P0–P3
+  //    Clip bounds to canvas dimensions
+  //
+  // 4) For each canvas pixel (X,Y) in bounding box:
+  //
+  // cx = X + 0.5
+  // cy = Y + 0.5
+  //
+  // // canvas → user
+  // ux = a' * cx + c' * cy + e'
+  // uy = b' * cx + d' * cy + f'
+  //
+  // // reject pixels outside destination rect
+  // if ux < dx or ux >= dx + dw or
+  //    uy < dy or uy >= dy + dh:
+  //     continue
+  //
+  // // user → image
+  // tx = (ux - dx) / dw
+  // ty = (uy - dy) / dh
+  //
+  // srcX = sx + tx * sWidth
+  // srcY = sy + ty * sHeight
+  //
+  // if srcX < sx or srcX >= sx + sWidth or
+  //    srcY < sy or srcY >= sy + sHeight:
+  //     continue
+  //
+  // // sample source image
+  // ix = floor(srcX)
+  // iy = floor(srcY)
+  // color = image[ix, iy]
+  //
+  // // write result
+  // canvas[X, Y] = color
+  //
+  // Notes:
+  // - Backward mapping prevents holes
+  // - Per-pixel inverse avoids FP accumulation
+  // - Works for scale/rotate/skew/translate
+  // - One matrix inversion per draw call
+  pub fn drawImage(self: *Self, image: ImageData, dx: i32, dy: i32) void {
+    self.drawImage3(image, 0, 0, image.width, image.height, dx, dy, image.width, image.height);
+  }
+  pub fn drawImage2(self: *Self, image: ImageData, dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
+    self.drawImage3(image, 0, 0, image.width, image.height, dx, dy, dWidth, dHeight);
+  }
+  pub fn drawImage3(self: *Self, image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
+    dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
+    const no_stretching = sWidth == dWidth and sHeight == dHeight;
+    if (no_stretching) {
+      if (self.alpha) {
+        switch (self.getInterpolationType()) {
+          .nearest => self.innerDrawImage3(true, true, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .linear => self.innerDrawImage3(true, true, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .cubic => self.innerDrawImage3(true, true, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+        }
+      } else {
+        switch (self.getInterpolationType()) {
+          .nearest => self.innerDrawImage3(true, false, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .linear => self.innerDrawImage3(true, false, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .cubic => self.innerDrawImage3(true, false, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+        }
+      }
+    } else {
+      if (self.alpha) {
+        switch (self.getInterpolationType()) {
+          .nearest => self.innerDrawImage3(false, true, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .linear => self.innerDrawImage3(false, true, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .cubic => self.innerDrawImage3(false, true, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+        }
+      } else {
+        switch (self.getInterpolationType()) {
+          .nearest => self.innerDrawImage3(false, false, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .linear => self.innerDrawImage3(false, false, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+          .cubic => self.innerDrawImage3(false, false, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+        }
+      }
+    }
+  }
+
+  pub fn innerDrawImage3(self: *Self, comptime no_stretching: bool, comptime alpha: bool,
+    comptime interpolation_type: InterpolationType,
+    image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
+    dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
+    const fsx: f32 = @floatFromInt(sx);
+    const fsy: f32 = @floatFromInt(sy);
+    const fsWidth: f32 = @floatFromInt(sWidth);
+    const fsHeight: f32 = @floatFromInt(sHeight);
+    const fdx: f32 = @floatFromInt(dx);
+    const fdy: f32 = @floatFromInt(dy);
+    const fdWidth: f32 = @floatFromInt(dWidth);
+    const fdHeight: f32 = @floatFromInt(dHeight);
+    const fcanvas_width: f32 = @floatFromInt(self.width);
+    const fcanvas_height: f32 = @floatFromInt(self.height);
+
+    // Inverse the matrix transform
+    var inverse: [6]f32 = .{ 0 } ** 6;
+    self.getInverse(&inverse) catch @panic("non invertible transform");
+    // Compute the destination parallelogram
+    const p0x, const p0y = self.transformPoint(fdx, fdy);
+    const p1x, const p1y = self.transformPoint(fdx + fdWidth, fdy);
+    const p2x, const p2y = self.transformPoint(fdx, fdy + fdHeight);
+    const p3x, const p3y = self.transformPoint(fdx + fdWidth, fdy + fdHeight);
+    // Compute the bounding box taking into account the canvas dimentions
+    const minx: usize = @intFromFloat(@round(@max(0, @min(fcanvas_width, @reduce(.Min, @Vector(4, f32){ p0x, p1x, p2x, p3x })))));
+    const maxx: usize = @intFromFloat(@round(@max(0, @min(fcanvas_width, @reduce(.Max, @Vector(4, f32){ p0x, p1x, p2x, p3x })))));
+    const miny: usize = @intFromFloat(@round(@max(0, @min(fcanvas_height, @reduce(.Min, @Vector(4, f32){ p0y, p1y, p2y, p3y })))));
+    const maxy: usize = @intFromFloat(@round(@max(0, @min(fcanvas_height, @reduce(.Max, @Vector(4, f32){ p0y, p1y, p2y, p3y })))));
+    // raw pointers to avoid slice overhead in the loop
+    const dest_ptr: [*]u32 = self.buffer.ptr;
+    const src_ptr: [*]const u32 = @ptrCast(@alignCast(image.data.ptr));
+    // Go through the bounding box and transform to image space
+    for (miny..maxy) |j| {
+      for (minx..maxx) |i| {
+        const ux, const uy = applyMatrixToPoint(inverse, @floatFromInt(i), @floatFromInt(j));
+        // user → image
+        const srcX, const srcY = if (comptime no_stretching) lbl: {
+          const tx = (ux - fdx);
+          const ty = (uy - fdy);
+          const srcX = fsx + tx;
+          const srcY = fsy + ty;
+          break :lbl .{ srcX, srcY };
+        } else lbl: {
+          const tx = (ux - fdx) / fdWidth;
+          const ty = (uy - fdy) / fdHeight;
+          const srcX = fsx + tx * fsWidth;
+          const srcY = fsy + ty * fsHeight;
+          break :lbl .{ srcX, srcY };
+        };
+        if (srcX < fsx or srcX >= fsx + fsWidth or
+            srcY < fsy or srcY >= fsy + fsHeight) {
+          continue;
+        }
+        // Here we choose the interpolation technique
+        const fg_packed = lbl: switch (comptime interpolation_type) {
+          .nearest => {
+            const ix: usize = @intFromFloat(@round(srcX));
+            const iy: usize = @intFromFloat(@round(srcY));
+            const image_index = iy * image.width + ix;
+            break :lbl src_ptr[image_index];
+          },
+          .linear => {
+            const rx = std.math.modf(srcX);
+            const ry = std.math.modf(srcY);
+            const floor_ix: u16 = @intFromFloat(rx.ipart);
+            const floor_iy: u16 = @intFromFloat(ry.ipart);
+            const ceil_ix = floor_ix + 1;
+            const ceil_iy = floor_iy + 1;
+            // Operate on RGBA value in SIMD vectors
+            const c00: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[floor_ix + floor_iy * image.width])));
+            const c01: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ceil_ix + floor_iy * image.width])));
+            const c10: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[floor_ix + ceil_iy * image.width])));
+            const c11: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ceil_ix + ceil_iy * image.width])));
+            const c0: @Vector(4, f32) = c00 * @as(@Vector(4, f32), @splat(1 - rx.fpart)) + c01 * @as(@Vector(4, f32), @splat(rx.fpart));
+            const c1: @Vector(4, f32) = c10 * @as(@Vector(4, f32), @splat(1 - rx.fpart)) + c11 * @as(@Vector(4, f32), @splat(rx.fpart));
+            const c: @Vector(4, u8) = @intFromFloat(c0 * @as(@Vector(4, f32), @splat(1 - ry.fpart)) + c1 * @as(@Vector(4, f32), @splat(ry.fpart)));
+            break :lbl @as(u32, @bitCast(c));
+          },
+          else => @panic(std.fmt.comptimePrint("interpolation type {} not implemented", .{ interpolation_type })),
+        };
+
+        const buffer_index = j * self.width + i;
+        if (comptime alpha) {
+          const bg_packed = dest_ptr[buffer_index];
+          const result_8 = blend(bg_packed, fg_packed);
+          // Store full pixel (Single instruction store)
+          dest_ptr[buffer_index] = result_8;
+        } else {
+          dest_ptr[buffer_index] = fg_packed;
+        }
+      }
+    }
+  }
+
+  // SIMD version of innerDrawImage3. 25% faster than the regular version
+  // pub fn innerDrawImage3(self: *Self, comptime no_stretching: bool, comptime alpha: bool,
+  //   comptime interpolation_type: InterpolationType,
+  //   image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
+  //   dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
+  //   const fsx: f32 = @floatFromInt(sx);
+  //   const fsy: f32 = @floatFromInt(sy);
+  //   const fsWidth: f32 = @floatFromInt(sWidth);
+  //   const fsHeight: f32 = @floatFromInt(sHeight);
+  //   const fdx: f32 = @floatFromInt(dx);
+  //   const fdy: f32 = @floatFromInt(dy);
+  //   const fdWidth: f32 = @floatFromInt(dWidth);
+  //   const fdHeight: f32 = @floatFromInt(dHeight);
+  //   const fcanvas_width: f32 = @floatFromInt(self.width);
+  //   const fcanvas_height: f32 = @floatFromInt(self.height);
+  //   _ = interpolation_type; // TODO
+  //   // Inverse the matrix transform
+  //   var inverse: [6]f32 = .{ 0 } ** 6;
+  //   self.getInverse(&inverse) catch @panic("non invertible transform");
+  //   // Compute the destination parallelogram
+  //   const p0x, const p0y = self.transformPoint(fdx, fdy);
+  //   const p1x, const p1y = self.transformPoint(fdx + fdWidth, fdy);
+  //   const p2x, const p2y = self.transformPoint(fdx, fdy + fdHeight);
+  //   const p3x, const p3y = self.transformPoint(fdx + fdWidth, fdy + fdHeight);
+  //   // Compute the bounding box taking into account the canvas dimentions
+  //   const minx: usize = @intFromFloat(@round(@max(0, @min(fcanvas_width, @reduce(.Min, @Vector(4, f32){ p0x, p1x, p2x, p3x })))));
+  //   const maxx: usize = @intFromFloat(@round(@max(0, @min(fcanvas_width, @reduce(.Max, @Vector(4, f32){ p0x, p1x, p2x, p3x })))));
+  //   const miny: usize = @intFromFloat(@round(@max(0, @min(fcanvas_height, @reduce(.Min, @Vector(4, f32){ p0y, p1y, p2y, p3y })))));
+  //   const maxy: usize = @intFromFloat(@round(@max(0, @min(fcanvas_height, @reduce(.Max, @Vector(4, f32){ p0y, p1y, p2y, p3y })))));
+  //   // raw pointers to avoid slice overhead in the loop
+  //   const dest_ptr: [*]u32 = self.buffer.ptr;
+  //   const src_ptr: [*]const u32 = @ptrCast(@alignCast(image.data.ptr));
+
+  //   // --- SIMD PRE-CALCULATION START ---
+  //   // Prepare constants to replace 'applyMatrixToPoint' and 'no_stretching' logic inside the loop
+  //   const scale_x = if (comptime no_stretching) 1.0 else fsWidth / fdWidth;
+  //   const scale_y = if (comptime no_stretching) 1.0 else fsHeight / fdHeight;
+
+  //   // Combined coefficients: src = (Inverse * Screen - dest_offset) * scale + src_offset
+  //   // Assuming standard 2D matrix layout: x' = inv[0]x + inv[2]y + inv[4]
+  //   const A = inverse[0] * scale_x;
+  //   const B = inverse[2] * scale_x;
+  //   const C = (inverse[4] - fdx) * scale_x + fsx;
+
+  //   const D = inverse[1] * scale_y;
+  //   const E = inverse[3] * scale_y;
+  //   const F = (inverse[5] - fdy) * scale_y + fsy;
+
+  //   const Vec4f = @Vector(4, f32);
+  //   const Vec4i = @Vector(4, i32);
+  //   const vec_offset = Vec4f{ 0, 1, 2, 3 };
+  //   const vec_A = @as(Vec4f, @splat(A));
+  //   const vec_D = @as(Vec4f, @splat(D));
+  //   // --- SIMD PRE-CALCULATION END ---
+
+  //   // Go through the bounding box and transform to image space
+  //   for (miny..maxy) |j| {
+  //     // Pre-calculate row base components
+  //     const fj = @as(f32, @floatFromInt(j));
+  //     const row_base_x = B * fj + C;
+  //     const row_base_y = E * fj + F;
+
+  //     var i = minx;
+  //     // Vectorized Loop (4 pixels at a time)
+  //     while (i + 4 <= maxx) : (i += 4) {
+  //       const fi = @as(f32, @floatFromInt(i));
+
+  //       // Calculate Screen Coordinates: {i, i+1, i+2, i+3}
+  //       const vec_scr_x = @as(Vec4f, @splat(fi)) + vec_offset;
+
+  //       // Apply Matrix and Scaling (SIMD)
+  //       const vec_src_x = vec_A * vec_scr_x + @as(Vec4f, @splat(row_base_x));
+  //       const vec_src_y = vec_D * vec_scr_x + @as(Vec4f, @splat(row_base_y));
+
+  //       // Convert to Integer (SIMD) - Rounding as per original code
+  //       const vec_ix = @as(Vec4i, @intFromFloat(@round(vec_src_x)));
+  //       const vec_iy = @as(Vec4i, @intFromFloat(@round(vec_src_y)));
+
+  //       // Extract to array to handle memory access
+  //       const arr_ix: [4]i32 = vec_ix;
+  //       const arr_iy: [4]i32 = vec_iy;
+  //       const arr_src_x: [4]f32 = vec_src_x;
+  //       const arr_src_y: [4]f32 = vec_src_y;
+
+  //       inline for (0..4) |k| {
+  //         const srcX = arr_src_x[k];
+  //         const srcY = arr_src_y[k];
+
+  //         if (srcX >= fsx and srcX < fsx + fsWidth and
+  //           srcY >= fsy and srcY < fsy + fsHeight) {
+
+  //           const ix: usize = @intCast(arr_ix[k]);
+  //           const iy: usize = @intCast(arr_iy[k]);
+
+  //           const buffer_index = j * self.width + (i + k);
+  //           const image_index = iy * image.width + ix;
+  //           const fg_packed = src_ptr[image_index];
+
+  //           if (comptime alpha) {
+  //             const bg_packed = dest_ptr[buffer_index];
+  //             const result_8 = blend(bg_packed, fg_packed);
+  //             dest_ptr[buffer_index] = result_8;
+  //           } else {
+  //             dest_ptr[buffer_index] = fg_packed;
+  //           }
+  //         }
+  //       }
+  //     }
+
+  //     // Handle remaining pixels (Scalar fallback)
+  //     while (i < maxx) : (i += 1) {
+  //       const fi = @as(f32, @floatFromInt(i));
+  //       const srcX = A * fi + row_base_x;
+  //       const srcY = D * fi + row_base_y;
+
+  //       if (srcX >= fsx and srcX < fsx + fsWidth and
+  //         srcY >= fsy and srcY < fsy + fsHeight) {
+
+  //         const ix: usize = @intFromFloat(@round(srcX));
+  //         const iy: usize = @intFromFloat(@round(srcY));
+  //         const buffer_index = j * self.width + i;
+  //         const image_index = iy * image.width + ix;
+  //         const fg_packed = src_ptr[image_index];
+
+  //         if (comptime alpha) {
+  //           const bg_packed = dest_ptr[buffer_index];
+  //           const result_8 = blend(bg_packed, fg_packed);
+  //           dest_ptr[buffer_index] = result_8;
+  //         } else {
+  //           dest_ptr[buffer_index] = fg_packed;
+  //         }
+  //       }
+  //     }
+  //   }
+  // }
+
   //
   // Private functions
   //
+
+  fn getInterpolationType(self: Self) InterpolationType {
+    if (self.imageSmoothingEnabled) {
+      if (std.mem.eql(u8, self.imageSmoothingQuality, "low")) {
+        return InterpolationType.nearest;
+      } else if (std.mem.eql(u8, self.imageSmoothingQuality, "high")) {
+        return InterpolationType.cubic;
+      }
+      return InterpolationType.linear;
+    }
+    return InterpolationType.nearest;
+  }
 
   /// Draws a point without transformation. To be used by private functions.
   inline fn internalPlot(self: Self, x: i16, y: i16, acolor: u32) void {
@@ -621,9 +1057,13 @@ pub const DrawContext = struct {
 
   /// Transform a point according to the currently set transform matrix in the context.
   fn transformPoint(self: Self, x: f32, y: f32) struct { f32, f32 } {
+    return applyMatrixToPoint(self.transformMatrix, x, y);
+  }
+
+  fn applyMatrixToPoint(m: [6]f32, x: f32, y: f32) struct { f32, f32 } {
     return .{
-      self.transformMatrix[_a] * x + self.transformMatrix[_c] * y + self.transformMatrix[_e],
-      self.transformMatrix[_b] * x + self.transformMatrix[_d] * y + self.transformMatrix[_f],
+      m[_a] * x + m[_c] * y + m[_e],
+      m[_b] * x + m[_d] * y + m[_f],
     };
   }
 
@@ -994,4 +1434,29 @@ test "fillCircle" {
     0, 1, 1, 1, 0,
     0, 0, 1, 0, 0,
   }, ctx.buffer);
+}
+
+test "getInverse" {
+  std.testing.log_level = .debug;
+  const allocator = std.testing.allocator;
+
+  var ctx = try DrawContext.init(allocator, 5, 5);
+  defer ctx.deinit(allocator);
+
+  var inverse: [6]f32 = .{ 0 } ** 6;
+  try ctx.getInverse(&inverse);
+  try std.testing.expectEqual(.{ 1, 0, 0, 1, 0, 0 }, inverse);
+
+  ctx.translate(2, 0);
+  try ctx.getInverse(&inverse);
+  try std.testing.expectEqual(.{ 1, 0, 0, 1, -2, 0 }, inverse);
+
+  ctx.rotate(std.math.pi);
+  try ctx.getInverse(&inverse);
+  try std.testing.expect(-1 - inverse[0] < 0.000001);
+  try std.testing.expect( 0 - inverse[1] < 0.000001);
+  try std.testing.expect( 0 - inverse[2] < 0.000001);
+  try std.testing.expect(-1 - inverse[3] < 0.000001);
+  try std.testing.expect( 2 - inverse[4] < 0.000001);
+  try std.testing.expect( 0 - inverse[5] < 0.000001);
 }

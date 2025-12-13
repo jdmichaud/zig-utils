@@ -108,5 +108,5 @@ pub fn asFloat(comptime T: type, integer: anytype) T {
 
 // From an int to a f32
 pub fn asf32(integer: anytype) f32 {
-  return asFloat(f32, @intCast(integer));
+  return asFloat(f32, integer);
 }
