@@ -30,6 +30,7 @@ pub const ImageData = struct {
   height: u32,
   pixel_format: PixelFormat,
   data: []const u8,
+  premultipliedAlpha: bool = false,
 };
 
 const InterpolationType = enum {
@@ -185,9 +186,9 @@ pub const DrawContext = struct {
   // erases the pixels in a rectangular area by setting them to transparent
   // black.
   // ⚠️ Operates in buffer space (do not take the transformation matrix into account)
-  pub fn clearRect(self: Self, x: i16, y: i16, width: i16, height: i16) void {
+  pub fn clearRect(self: Self, x: i16, y: i16, width: usize, height: usize) void {
     if (x == 0 and y == 0 and width == self.width and height == self.height) {
-      @memset(&self.buffer, 0xFF000000);
+      @memset(self.buffer, 0xFF000000);
     } else {
       @panic("clearReact on sizes different from the canvas is not yet implemented");
     }
@@ -454,7 +455,8 @@ pub const DrawContext = struct {
   //   self.putImageData2(imageData, bounded_dx, bounded_dy, sx, sy, width, height);
   // }
 
-  // A little slower be easier to understand
+  // A little slower but easier to understand
+  // Made with Gemini Pro 3
   pub fn putImageData(self: *Self, imageData: ImageData, dx: isize, dy: isize) void {
       if (dx >= self.width or
           dy >= self.height or
@@ -625,42 +627,43 @@ pub const DrawContext = struct {
   pub fn drawImage2(self: *Self, image: ImageData, dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
     self.drawImage3(image, 0, 0, image.width, image.height, dx, dy, dWidth, dHeight);
   }
+  // We generate all the combination of the compile time parameters to generate
+  // all the possible functions.
   pub fn drawImage3(self: *Self, image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
     dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
+
     const no_stretching = sWidth == dWidth and sHeight == dHeight;
-    if (no_stretching) {
-      if (self.alpha) {
-        switch (self.getInterpolationType()) {
-          .nearest => self.innerDrawImage3(true, true, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .linear => self.innerDrawImage3(true, true, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .cubic => self.innerDrawImage3(true, true, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-        }
-      } else {
-        switch (self.getInterpolationType()) {
-          .nearest => self.innerDrawImage3(true, false, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .linear => self.innerDrawImage3(true, false, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .cubic => self.innerDrawImage3(true, false, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-        }
-      }
-    } else {
-      if (self.alpha) {
-        switch (self.getInterpolationType()) {
-          .nearest => self.innerDrawImage3(false, true, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .linear => self.innerDrawImage3(false, true, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .cubic => self.innerDrawImage3(false, true, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-        }
-      } else {
-        switch (self.getInterpolationType()) {
-          .nearest => self.innerDrawImage3(false, false, InterpolationType.nearest, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .linear => self.innerDrawImage3(false, false, InterpolationType.linear, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
-          .cubic => self.innerDrawImage3(false, false, InterpolationType.cubic, image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight),
+    const runtime_interp = self.getInterpolationType();
+
+    // 1. Iterate over possible boolean values at compile-time
+    inline for (.{ false, true }) |no_stretching_param| {
+      // 2. Check if the runtime value matches the current compile-time value
+      if (no_stretching == no_stretching_param) {
+        inline for (.{ false, true }) |canvas_alpha| {
+          if (self.alpha == canvas_alpha) {
+            inline for (.{ false, true }) |apply_premultiplied_alpha| {
+              // We apply the premultiplication only if it is NOT already apply in the image
+              if (image.premultipliedAlpha != apply_premultiplied_alpha) {
+                // 3. Use 'inline else' to unroll the enum switch
+                switch (runtime_interp) {
+                  inline else => |it| {
+                    self.innerDrawImage3(
+                      no_stretching_param, canvas_alpha, apply_premultiplied_alpha, it,
+                      image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight
+                    );
+                    return;
+                  },
+                }
+              }
+            }
+          }
         }
       }
     }
   }
 
   pub fn innerDrawImage3(self: *Self, comptime no_stretching: bool, comptime alpha: bool,
-    comptime interpolation_type: InterpolationType,
+    comptime premultiplyAlpha: bool, comptime interpolation_type: InterpolationType,
     image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
     dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
     const fsx: f32 = @floatFromInt(sx);
@@ -728,16 +731,114 @@ pub const DrawContext = struct {
             const ceil_ix = floor_ix + 1;
             const ceil_iy = floor_iy + 1;
             // Operate on RGBA value in SIMD vectors
-            const c00: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[floor_ix + floor_iy * image.width])));
-            const c01: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ceil_ix + floor_iy * image.width])));
-            const c10: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[floor_ix + ceil_iy * image.width])));
-            const c11: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ceil_ix + ceil_iy * image.width])));
+            var c00: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[floor_ix + floor_iy * image.width])));
+            var c01: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ceil_ix + floor_iy * image.width])));
+            var c10: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[floor_ix + ceil_iy * image.width])));
+            var c11: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ceil_ix + ceil_iy * image.width])));
+            if (comptime premultiplyAlpha) {
+              // Pre-multiply alpha
+              c00 = premulAlpha(c00, c00[3] / 255.0);
+              c01 = premulAlpha(c01, c01[3] / 255.0);
+              c10 = premulAlpha(c10, c10[3] / 255.0);
+              c11 = premulAlpha(c11, c11[3] / 255.0);
+            }
             const c0: @Vector(4, f32) = c00 * @as(@Vector(4, f32), @splat(1 - rx.fpart)) + c01 * @as(@Vector(4, f32), @splat(rx.fpart));
             const c1: @Vector(4, f32) = c10 * @as(@Vector(4, f32), @splat(1 - rx.fpart)) + c11 * @as(@Vector(4, f32), @splat(rx.fpart));
-            const c: @Vector(4, u8) = @intFromFloat(c0 * @as(@Vector(4, f32), @splat(1 - ry.fpart)) + c1 * @as(@Vector(4, f32), @splat(ry.fpart)));
+            var c: @Vector(4, f32) = c0 * @as(@Vector(4, f32), @splat(1 - ry.fpart)) + c1 * @as(@Vector(4, f32), @splat(ry.fpart));
+            if (comptime premultiplyAlpha) {
+              if (c[3] > 1.0) {
+                // Un-premultiply
+                c = premulAlpha(c, 255.0 / c[3]);
+              } else {
+                c = @splat(0);
+              }
+            }
+            const res: @Vector(4, u8) = @intFromFloat(c);
+            break :lbl @as(u32, @bitCast(res));
+          },
+          // Made with Gemini Pro 3
+          .cubic => {
+            const rx = std.math.modf(srcX);
+            const ry = std.math.modf(srcY);
+
+            // Calculate base integer coordinates
+            const base_x: isize = @intFromFloat(rx.ipart);
+            const base_y: isize = @intFromFloat(ry.ipart);
+            const w: isize = @intCast(image.width);
+            const h: isize = @intCast(image.height);
+
+            // Calculate Catmull-Rom weights for X
+            // Weights are calculated based on fractional part (fx) for points: -1, 0, 1, 2
+            const fx = rx.fpart;
+            const fx2 = fx * fx;
+            const fx3 = fx2 * fx;
+            const wx0: @Vector(4, f32) = @splat(-0.5 * fx3 + fx2 - 0.5 * fx);
+            const wx1: @Vector(4, f32) = @splat( 1.5 * fx3 - 2.5 * fx2 + 1.0);
+            const wx2: @Vector(4, f32) = @splat(-1.5 * fx3 + 2.0 * fx2 + 0.5 * fx);
+            const wx3: @Vector(4, f32) = @splat( 0.5 * fx3 - 0.5 * fx2);
+
+            // Calculate Catmull-Rom weights for Y
+            const fy = ry.fpart;
+            const fy2 = fy * fy;
+            const fy3 = fy2 * fy;
+            const wy = [4]@Vector(4, f32){
+                @splat(-0.5 * fy3 + fy2 - 0.5 * fy),
+                @splat( 1.5 * fy3 - 2.5 * fy2 + 1.0),
+                @splat(-1.5 * fy3 + 2.0 * fy2 + 0.5 * fy),
+                @splat( 0.5 * fy3 - 0.5 * fy2),
+            };
+
+            // Pre-calculate clamped X indices to handle image edges safely
+            // (Accessing index -1 or width+1 would crash or read garbage)
+            const ix0 = @as(usize, @intCast(std.math.clamp(base_x - 1, 0, w - 1)));
+            const ix1 = @as(usize, @intCast(std.math.clamp(base_x,     0, w - 1)));
+            const ix2 = @as(usize, @intCast(std.math.clamp(base_x + 1, 0, w - 1)));
+            const ix3 = @as(usize, @intCast(std.math.clamp(base_x + 2, 0, w - 1)));
+
+            var color_acc: @Vector(4, f32) = @splat(0);
+
+            // Convolve separate rows (Y axis loop)
+            inline for (0..4) |k| {
+                // Clamp Y index
+                const iy = std.math.clamp(base_y - 1 + @as(isize, k), 0, h - 1);
+                const row_offset = @as(usize, @intCast(iy)) * image.width;
+
+                // Fetch row pixels
+                var c0: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ix0 + row_offset])));
+                var c1: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ix1 + row_offset])));
+                var c2: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ix2 + row_offset])));
+                var c3: @Vector(4, f32) = @floatFromInt(@as(@Vector(4, u8), @bitCast(src_ptr[ix3 + row_offset])));
+                if (comptime premultiplyAlpha) {
+                  // Pre-multiply alpha
+                  c0 = premulAlpha(c0, c0[3] / 255.0);
+                  c1 = premulAlpha(c1, c1[3] / 255.0);
+                  c2 = premulAlpha(c2, c2[3] / 255.0);
+                  c3 = premulAlpha(c3, c3[3] / 255.0);
+                }
+
+                // Interpolate horizontally (X axis)
+                const row_val = c0 * wx0 + c1 * wx1 + c2 * wx2 + c3 * wx3;
+
+                // Accumulate vertically (Y axis)
+                color_acc += row_val * wy[k];
+            }
+
+            if (comptime premultiplyAlpha) {
+              if (color_acc[3] > 1.0) {
+                // Un-premultiply
+                color_acc = premulAlpha(color_acc, 255.0 / color_acc[3]);
+              } else {
+                color_acc = @splat(0);
+              }
+            }
+
+            // Clamp results to [0, 255] because cubic interpolation can overshoot
+            const clamped = std.math.clamp(color_acc, @as(@Vector(4, f32), @splat(0)), @as(@Vector(4, f32), @splat(255)));
+
+            const c: @Vector(4, u8) = @intFromFloat(clamped);
             break :lbl @as(u32, @bitCast(c));
           },
-          else => @panic(std.fmt.comptimePrint("interpolation type {} not implemented", .{ interpolation_type })),
+          // else => @panic(std.fmt.comptimePrint("interpolation type {} not implemented", .{ interpolation_type })),
         };
 
         const buffer_index = j * self.width + i;
@@ -753,7 +854,12 @@ pub const DrawContext = struct {
     }
   }
 
+  fn premulAlpha(v: @Vector(4, f32), a: f32) @Vector(4, f32) {
+      return v * @Vector(4, f32){ a, a, a, 1.0 };
+  }
+
   // SIMD version of innerDrawImage3. 25% faster than the regular version
+  // Made with Gemini Pro 3
   // pub fn innerDrawImage3(self: *Self, comptime no_stretching: bool, comptime alpha: bool,
   //   comptime interpolation_type: InterpolationType,
   //   image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
