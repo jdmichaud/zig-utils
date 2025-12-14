@@ -535,28 +535,6 @@ pub const DrawContext = struct {
     }
   }
 
-  fn blend(bg_packed: u32, fg_packed: u32) u32 {
-    // We expand to u16 immediately to prevent overflow during multiply
-    const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
-    const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
-    const alpha_val = fg[3];
-    // Optimization: If alpha is 0, skip. If 255, simple copy.
-    if (alpha_val == 0) return bg_packed;
-    if (alpha_val == 255) {
-        return fg_packed;
-    }
-
-    const a: @Vector(4, u16) = @splat(alpha_val);
-    const max: @Vector(4, u16) = @splat(255);
-    const inv_a = max - a;
-    // (bg * inv_a + fg * a) / 255
-    const tmp = bg * inv_a + fg * a;
-    const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
-
-    const result_8: @Vector(4, u8) = @intCast(result_16);
-    return @bitCast(result_8);
-  }
-
   // drawImage Rasterization Algorithm (Affine Canvas)
   //
   // Spaces:
@@ -856,6 +834,28 @@ pub const DrawContext = struct {
 
   fn premulAlpha(v: @Vector(4, f32), a: f32) @Vector(4, f32) {
       return v * @Vector(4, f32){ a, a, a, 1.0 };
+  }
+
+  fn blend(bg_packed: u32, fg_packed: u32) u32 {
+    // We expand to u16 immediately to prevent overflow during multiply
+    const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
+    const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
+    const alpha_val = fg[3];
+    // Optimization: If alpha is 0, skip. If 255, simple copy.
+    if (alpha_val == 0) return bg_packed;
+    if (alpha_val == 255) {
+        return fg_packed;
+    }
+
+    const a: @Vector(4, u16) = @splat(alpha_val);
+    const max: @Vector(4, u16) = @splat(255);
+    const inv_a = max - a;
+    // (bg * inv_a + fg * a) / 255
+    const tmp = bg * inv_a + fg * a;
+    const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
+
+    const result_8: @Vector(4, u8) = @intCast(result_16);
+    return @bitCast(result_8);
   }
 
   // SIMD version of innerDrawImage3. 25% faster than the regular version
