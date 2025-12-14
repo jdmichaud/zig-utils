@@ -2,12 +2,15 @@
 // zig build -freference-trace=8 draw -- fillPolygon
 // zig build -freference-trace=8 draw -- png examples/sprite.png
 // zig build -freference-trace=8 draw -- draw examples/sprite.png
+// zig build -freference-trace=8 draw -- interaction examples/sprite.png
+// zig build -freference-trace=8 draw -- print /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf Test
 const std = @import("std");
 const misc = @import("misc");
 const draw = @import("draw");
 const ioAdapter = @import("io_adapter");
 const geometry = @import("geometry");
 const png = @import("png");
+const ttf = @import("ttf");
 const zlm = @import("zlm");
 
 const stdout = std.io.getStdOut().writer();
@@ -52,8 +55,222 @@ pub fn main() !void {
             return;
         }
         try runDrawExample(allocator, args[2]);
+    } else if (std.mem.eql(u8, example, "interaction")) {
+        if (args.len != 3) {
+            std.debug.print("Usage: {s} interaction <path/to/image.png>\n", .{args[0]});
+            return;
+        }
+        try runInteractionExample(allocator, args[2]);
+    } else if (std.mem.eql(u8, example, "print")) {
+        if (args.len != 4) {
+            std.debug.print("Usage: {s} print <path/to/ttf_font.ttf> <text>\n", .{args[0]});
+            return;
+        }
+        try runPrintExample(allocator, args[2], args[3]);
     } else {
         std.debug.print("Unknown example: {s}\n", .{ example });
+    }
+}
+
+fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []const u8) !void {
+    const width = 800;
+    const height = 600;
+
+    var adapter = try ioAdapter.SDLAdapter.init(width, height);
+    defer adapter.deinit();
+
+    var context = try draw.DrawContext.init(allocator, width, height);
+    context.alpha = true;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "low";
+
+    // Load the PNG file
+    const input = try misc.load(ttf_path);
+    defer std.posix.munmap(input);
+    var ttf_font = try ttf.TtfFont.load(allocator, input);
+    defer ttf_font.deinit(allocator);
+
+    var quit = false;
+    var render_time: i128 = 0;
+
+    const font_width = 100;
+    const font_height = 100;
+
+    var x: i32 = @intCast(@divTrunc(width, 2) - @divTrunc(font_width, 2));
+    var y: i32 = @intCast(@divTrunc(height, 2) - @divTrunc(font_height, 2));
+    const angle = 0;
+    var zoom_factor: f32 = 1.0;
+
+    var mouse_position: [2]i32 = .{ 0, 0 };
+    var mouse_buttons: u3 = 0;
+    _ = text;
+    while (!quit) {
+        misc.x11checkerboard(width, height, context.buffer);
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.translate(misc.asf32(x) + misc.asf32(font_width) / 2, misc.asf32(y) + misc.asf32(font_height) / 2);
+        context.rotate(angle);
+        context.scale(zoom_factor, zoom_factor);
+
+        while (adapter.interface.getEvent()) |event| {
+            switch (event) {
+                ioAdapter.EventType.KeyDown => |keyEvent| {
+                    switch (keyEvent.scancode) {
+                        ioAdapter.Scancode.ESCAPE => quit = true,
+                        ioAdapter.Scancode.I => {
+                            if (std.mem.eql(u8, context.imageSmoothingQuality, "low")) {
+                                context.imageSmoothingQuality = "medium";
+                            } else if (std.mem.eql(u8, context.imageSmoothingQuality, "medium")) {
+                                context.imageSmoothingQuality = "high";
+                            } else if (std.mem.eql(u8, context.imageSmoothingQuality, "high")) {
+                                context.imageSmoothingQuality = "low";
+                            }
+                            try stdout.print("set interpolation to {s}\n", .{ context.imageSmoothingQuality });
+                        },
+                        else => {},
+                    }
+                },
+                ioAdapter.EventType.MouseWheel => |payload| {
+                    zoom_factor = @max(0.1, zoom_factor + if (payload.y < 0) @as(f32, -0.1) else @as(f32, 0.1));
+                },
+                ioAdapter.EventType.MouseDown => |payload| {
+                    const which_btn = misc.asInt(u2, @intFromEnum(payload.button) - 1);
+                    mouse_buttons |= @as(u3, 1) << which_btn;
+                },
+                ioAdapter.EventType.MouseUp => |payload| {
+                    const which_btn = misc.asInt(u2, (@intFromEnum(payload.button) - 1));
+                    mouse_buttons ^= mouse_buttons & (@as(u3, 1) << which_btn);
+                },
+                ioAdapter.EventType.MouseMove => |payload| {
+                    mouse_position[0] = payload.x;
+                    mouse_position[1] = payload.y;
+                    if (mouse_buttons & @intFromEnum(ioAdapter.MouseButton.Left) != 0) {
+                        x += payload.dx;
+                        y += payload.dy;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Only go for 60fps
+        const now = std.time.nanoTimestamp();
+        if (quit or now - render_time > 16000000) {
+            // context.clearRect(0, 0, context.width, context.height);
+            adapter.interface.drawImage(context.buffer, 0, 0, width, height);
+            adapter.interface.renderScene();
+            render_time = now;
+        }
+    }
+}
+
+fn runInteractionExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
+    const width = 800;
+    const height = 600;
+
+    var adapter = try ioAdapter.SDLAdapter.init(width, height);
+    defer adapter.deinit();
+
+    var context = try draw.DrawContext.init(allocator, width, height);
+    context.alpha = true;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "low";
+
+    // Load the PNG file
+    const input = try misc.load(image_path);
+    defer std.posix.munmap(input);
+    var png_image_data = try png.load_png(allocator, input);
+    defer png_image_data.deinit(allocator);
+
+    const imageData = draw.ImageData{
+        .width = png_image_data.header.getWidth(),
+        .height = png_image_data.header.getHeight(),
+        .pixel_format = draw.PixelFormat.RGBA8,
+        .data = png_image_data.data,
+    };
+
+    var quit = false;
+    var render_time: i128 = 0;
+
+    var x: i32 = @intCast(@divTrunc(width, 2) - @divTrunc(imageData.width, 2));
+    var y: i32 = @intCast(@divTrunc(height, 2) - @divTrunc(imageData.height, 2));
+    const angle = 0;
+    var zoom_factor: f32 = 1.0;
+
+    var mouse_position: [2]i32 = .{ 0, 0 };
+    var mouse_buttons: u3 = 0;
+    var shift_pressed = false;
+    var ctrl_pressed = false;
+    while (!quit) {
+        misc.x11checkerboard(width, height, context.buffer);
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.translate(misc.asf32(x) + misc.asf32(imageData.width) / 2, misc.asf32(y) + misc.asf32(imageData.height) / 2);
+        context.rotate(angle);
+        context.scale(zoom_factor, zoom_factor);
+        context.drawImage(imageData, -@as(i32, @intCast(imageData.width / 2)), -@as(i32, @intCast(imageData.height / 2)));
+
+        while (adapter.interface.getEvent()) |event| {
+            switch (event) {
+                ioAdapter.EventType.KeyDown => |keyEvent| {
+                    switch (keyEvent.scancode) {
+                        ioAdapter.Scancode.ESCAPE => quit = true,
+                        ioAdapter.Scancode.LSHIFT => shift_pressed = true,
+                        ioAdapter.Scancode.RSHIFT => shift_pressed = true,
+                        ioAdapter.Scancode.RCTRL => ctrl_pressed = true,
+                        ioAdapter.Scancode.LCTRL => ctrl_pressed = true,
+                        ioAdapter.Scancode.I => {
+                            if (std.mem.eql(u8, context.imageSmoothingQuality, "low")) {
+                                context.imageSmoothingQuality = "medium";
+                            } else if (std.mem.eql(u8, context.imageSmoothingQuality, "medium")) {
+                                context.imageSmoothingQuality = "high";
+                            } else if (std.mem.eql(u8, context.imageSmoothingQuality, "high")) {
+                                context.imageSmoothingQuality = "low";
+                            }
+                            try stdout.print("set interpolation to {s}\n", .{ context.imageSmoothingQuality });
+                        },
+                        else => {},
+                    }
+                },
+                ioAdapter.EventType.KeyUp => |keyEvent| {
+                    switch (keyEvent.scancode) {
+                        ioAdapter.Scancode.LSHIFT => shift_pressed = false,
+                        ioAdapter.Scancode.RSHIFT => shift_pressed = false,
+                        ioAdapter.Scancode.RCTRL => ctrl_pressed = false,
+                        ioAdapter.Scancode.LCTRL => ctrl_pressed = false,
+                        else => {},
+                    }
+                },
+                ioAdapter.EventType.MouseWheel => |payload| {
+                    const factor: f32 = if (shift_pressed) 0.5 else 0.1;
+                    zoom_factor = @max(0.1, zoom_factor + if (payload.y < 0) @as(f32, -factor) else @as(f32, factor));
+                },
+                ioAdapter.EventType.MouseDown => |payload| {
+                    const which_btn = misc.asInt(u2, @intFromEnum(payload.button) - 1);
+                    mouse_buttons |= @as(u3, 1) << which_btn;
+                },
+                ioAdapter.EventType.MouseUp => |payload| {
+                    const which_btn = misc.asInt(u2, (@intFromEnum(payload.button) - 1));
+                    mouse_buttons ^= mouse_buttons & (@as(u3, 1) << which_btn);
+                },
+                ioAdapter.EventType.MouseMove => |payload| {
+                    mouse_position[0] = payload.x;
+                    mouse_position[1] = payload.y;
+                    if (mouse_buttons & @intFromEnum(ioAdapter.MouseButton.Left) != 0) {
+                        x += payload.dx;
+                        y += payload.dy;
+                    }
+                },
+                else => {},
+            }
+        }
+
+        // Only go for 60fps
+        const now = std.time.nanoTimestamp();
+        if (quit or now - render_time > 16000000) {
+            // context.clearRect(0, 0, context.width, context.height);
+            adapter.interface.drawImage(context.buffer, 0, 0, width, height);
+            adapter.interface.renderScene();
+            render_time = now;
+        }
     }
 }
 
@@ -68,8 +285,8 @@ fn runDrawExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
 
     var context = try draw.DrawContext.init(allocator, width, height);
     context.alpha = true;
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "medium";
+    // context.imageSmoothingEnabled = true;
+    // context.imageSmoothingQuality = "high";
     // to check the transparency
     misc.x11checkerboard(width, height, context.buffer);
 
@@ -131,7 +348,7 @@ fn runDrawExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
 
     if (!quit) {
         try stdout.print("Press any key to exit...\n", .{});
-        _ = adapter.interface.waitForKey();
+        _ = waitForKey(&adapter.interface);
     }
 }
 
@@ -194,7 +411,7 @@ fn runPngExample(allocator: std.mem.Allocator, image_path: []const u8) !void {
 
     if (!quit) {
         try stdout.print("Press any key to exit...\n", .{});
-        _ = adapter.interface.waitForKey();
+        _ = waitForKey(&adapter.interface);
     }
 }
 
@@ -288,7 +505,7 @@ fn runPolygonExample(allocator: std.mem.Allocator, action_type: enum { stroke, f
 
     if (!quit) {
         try stdout.print("Press any key to exit...\n", .{});
-        _ = adapter.interface.waitForKey();
+        _ = waitForKey(&adapter.interface);
     }
 }
 
@@ -344,7 +561,7 @@ fn runShapeExample(allocator: std.mem.Allocator, shape: Shape) !void {
 
     if (!quit) {
         try stdout.print("Press any key to exit...\n", .{});
-        _ = adapter.interface.waitForKey();
+        _ = waitForKey(&adapter.interface);
     }
 }
 
@@ -361,3 +578,11 @@ fn isQuit(adapter: *ioAdapter.IOAdapter) bool {
     }
     return false;
 }
+
+fn waitForKey(adapter: *ioAdapter.IOAdapter) void {
+    loop: switch (adapter.waitEvent()) {
+        .KeyDown => return,
+        else => continue :loop adapter.waitEvent(),
+    }
+}
+

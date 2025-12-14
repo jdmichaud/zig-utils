@@ -358,7 +358,7 @@ pub const IOAdapter = struct {
   getEventFn: *const fn (*IOAdapter) ?InputEvent,
   drawImageFn: *const fn (*IOAdapter, []const u32, u16, u16, u16, u16) void,
   renderSceneFn: *const fn (*IOAdapter) void,
-  waitForKeyFn: *const fn (*IOAdapter) void,
+  waitEventFn: *const fn (*IOAdapter) InputEvent,
 
   // Check if an event has been raised and return it.
   // If not, return null.
@@ -374,8 +374,8 @@ pub const IOAdapter = struct {
     return adapter.renderSceneFn(adapter);
   }
 
-  pub fn waitForKey(adapter: *IOAdapter) void {
-    return adapter.waitForKeyFn(adapter);
+  pub fn waitEvent(adapter: *IOAdapter) InputEvent {
+    return adapter.waitEventFn(adapter);
   }
 };
 
@@ -429,7 +429,7 @@ pub const SDLAdapter = struct {
         .getEventFn = getEvent,
         .drawImageFn = drawImage,
         .renderSceneFn = renderScene,
-        .waitForKeyFn = waitForKey,
+        .waitEventFn = waitEvent,
       },
     };
   }
@@ -447,46 +447,52 @@ pub const SDLAdapter = struct {
 
     var event: sdl.SDL_Event = undefined;
     if (sdl.SDL_PollEvent(&event) != 0) {
-      switch (event.type) {
-        sdl.SDL_KEYDOWN => {
-          return InputEvent{
-            .KeyDown = KeyEvent{
-              .mod = event.key.keysym.mod,
-              .scancode = @enumFromInt(event.key.keysym.scancode),
-              .keycode = Keycode.None,
-            },
-          };
-        },
-        sdl.SDL_KEYUP => {
-          return InputEvent{
-            .KeyUp = KeyEvent{
-              .mod = event.key.keysym.mod,
-              .scancode = @enumFromInt(event.key.keysym.scancode),
-              .keycode = Keycode.None,
-            },
-          };
-        },
-        sdl.SDL_MOUSEMOTION => {
-          return InputEvent{
-            .MouseMove = MouseMove{
-              .x = event.motion.x,
-              .y = event.motion.y,
-              .dx = event.motion.xrel,
-              .dy = event.motion.yrel,
-            },
-          };
-        },
-        sdl.SDL_MOUSEBUTTONDOWN => {
-          return InputEvent{ .MouseDown = MouseButtonEvent{ .button = @enumFromInt(event.button.button) } };
-        },
-        sdl.SDL_MOUSEBUTTONUP => {
-          return InputEvent{ .MouseUp = MouseButtonEvent{ .button = @enumFromInt(event.button.button) } };
-        },
-        sdl.SDL_MOUSEWHEEL => {
-          return InputEvent{ .MouseWheel = MouseWheel{ .y = event.wheel.y } };
-        },
-        else => {},
-      }
+      return toInputEvent(event);
+    }
+
+    return null;
+  }
+
+  fn toInputEvent(event: sdl.union_SDL_Event) ?InputEvent {
+    switch (event.type) {
+      sdl.SDL_KEYDOWN => {
+        return InputEvent{
+          .KeyDown = KeyEvent{
+            .mod = event.key.keysym.mod,
+            .scancode = @enumFromInt(event.key.keysym.scancode),
+            .keycode = Keycode.None,
+          },
+        };
+      },
+      sdl.SDL_KEYUP => {
+        return InputEvent{
+          .KeyUp = KeyEvent{
+            .mod = event.key.keysym.mod,
+            .scancode = @enumFromInt(event.key.keysym.scancode),
+            .keycode = Keycode.None,
+          },
+        };
+      },
+      sdl.SDL_MOUSEMOTION => {
+        return InputEvent{
+          .MouseMove = MouseMove{
+            .x = event.motion.x,
+            .y = event.motion.y,
+            .dx = event.motion.xrel,
+            .dy = event.motion.yrel,
+          },
+        };
+      },
+      sdl.SDL_MOUSEBUTTONDOWN => {
+        return InputEvent{ .MouseDown = MouseButtonEvent{ .button = @enumFromInt(event.button.button) } };
+      },
+      sdl.SDL_MOUSEBUTTONUP => {
+        return InputEvent{ .MouseUp = MouseButtonEvent{ .button = @enumFromInt(event.button.button) } };
+      },
+      sdl.SDL_MOUSEWHEEL => {
+        return InputEvent{ .MouseWheel = MouseWheel{ .y = event.wheel.y } };
+      },
+      else => {},
     }
 
     return null;
@@ -556,14 +562,21 @@ pub const SDLAdapter = struct {
     sdl.SDL_RenderPresent(self.renderer);
   }
 
-  pub fn waitForKey(adapter: *IOAdapter) void {
+  pub fn waitEvent(adapter: *IOAdapter) InputEvent {
     _ = adapter;
     var event: sdl.SDL_Event = undefined;
     loop: switch (sdl.SDL_WaitEvent(&event)) {
-      1 => switch (event.type) {
-        sdl.SDL_KEYDOWN => return,
-        else => continue :loop sdl.SDL_WaitEvent(&event),
+      1 => {
+        const input_event = toInputEvent(event);
+        if (input_event) |ie| {
+          return ie;
+        }
+        continue :loop sdl.SDL_WaitEvent(&event);
       },
+      // 1 => switch (event.type) {
+      //   sdl.SDL_KEYDOWN => return,
+      //   else => continue :loop sdl.SDL_WaitEvent(&event),
+      // },
       else => continue :loop sdl.SDL_WaitEvent(&event),
     }
   }
