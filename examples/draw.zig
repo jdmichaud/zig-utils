@@ -90,6 +90,12 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
     var ttf_font = try ttf.TtfFont.load(allocator, input);
     defer ttf_font.deinit(allocator);
 
+    for (ttf_font.table_records) |tr| {
+        std.log.debug("{s} 0x{x:0>8} {}", .{ tr.tag, tr.offset, tr.length });
+    }
+
+    std.log.debug("{any}", .{ ttf_font.getHead() });
+
     var quit = false;
     var render_time: i128 = 0;
 

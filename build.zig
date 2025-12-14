@@ -40,6 +40,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const ttf_mod = b.addModule("ttf", .{
+        .root_source_file = b.path("src/ttf.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const zlm_mod = b.addModule("zlm", .{
         .root_source_file = b.path("src/zlm.zig"),
         .target = target,
@@ -53,6 +59,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "misc", .module = misc_mod },
         .{ .name = "geometry", .module = geometry_mod },
         .{ .name = "png", .module = png_mod },
+        .{ .name = "ttf", .module = ttf_mod },
         .{ .name = "zlm", .module = zlm_mod },
     };
 
