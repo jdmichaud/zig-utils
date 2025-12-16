@@ -17,14 +17,13 @@ const OffsetTable = struct {
   entry_selector: u16,  // log2(maximum power of 2 <= numTables)
   range_shift: u16,     // numTables*16-searchRange
 
-  fn fromBytes(bytes: []const u8) OffsetTable {
-    var off: usize = 0;
+  fn fromBytes(bytes: []const u8, off: *usize) OffsetTable {
     return .{
-      .scaler_type = readT(u32, bytes, &off),
-      .num_tables = readT(u16, bytes, &off),
-      .search_range = readT(u16, bytes, &off),
-      .entry_selector = readT(u16, bytes, &off),
-      .range_shift = readT(u16, bytes, &off),
+      .scaler_type = readT(u32, bytes, off),
+      .num_tables = readT(u16, bytes, off),
+      .search_range = readT(u16, bytes, off),
+      .entry_selector = readT(u16, bytes, off),
+      .range_shift = readT(u16, bytes, off),
     };
   }
 
@@ -36,16 +35,16 @@ const TableRecord = struct {
   offset: u32,
   length: u32,
 
-  fn fromBytes(bytes: []const u8) TableRecord {
+  fn fromBytes(bytes: []const u8, off: *usize) TableRecord {
     var tag: [4]u8 = undefined;
-    @memcpy(&tag, bytes[0..4]);
+    @memcpy(&tag, bytes[off.*..][0..4]);
+    off.* += 4;
 
-    var off: usize = 4;
     return .{
       .tag = tag,
-      .checksum = readT(u32, bytes, &off),
-      .offset = readT(u32, bytes, &off),
-      .length = readT(u32, bytes, &off),
+      .checksum = readT(u32, bytes, off),
+      .offset = readT(u32, bytes, off),
+      .length = readT(u32, bytes, off),
     };
   }
 };
@@ -155,6 +154,167 @@ pub const HeadTable = struct {
       .glyph_data_format = readT(i16, bytes, &off),
     };
   }
+};
+
+const CmapHeader = struct {
+  /// Version number (Set to zero)
+  version: u16,
+  /// Number of encoding subtables
+  numberSubtables: u16,
+};
+
+const PlatformID = enum(u16) {
+  /// Indicates Unicode version
+  unicode = 0,
+  /// Script Manager code
+  macintosh = 1,
+  /// Do not use
+  reserved = 2,
+  /// Microsoft encoding
+  microsoft = 3,
+};
+
+const CmapRecord = struct {
+  /// Platform identifier
+  platformID: PlatformID,
+  /// Platform-specific encoding identifier
+  platformSpecificID: u16,
+  /// Offset of the mapping table
+  offset: u32,
+};
+
+const CmapSubtable = struct {
+  format: u16,
+  /// length in bytes including this structure
+  length: u16,
+  /// Language code
+  language: u16,
+  /// An array that maps character codes to glyph index values
+  glyph_index: []const u8,
+};
+
+pub const CmapTable = struct {
+  header: CmapHeader,
+  records: []CmapRecord,
+  tables: []CmapSubtable,
+
+  const Self = @This();
+  pub fn init(allocator: std.mem.Allocator, bytes: []const u8) !CmapTable {
+    var index: usize = 0;
+
+    // 1. Read the Header
+    const header = CmapHeader{
+      .version = readT(u16, bytes, &index),
+      .numberSubtables = readT(u16, bytes, &index),
+    };
+
+    // 2. Allocate and Read Encoding Records
+    const records = try allocator.alloc(CmapRecord, header.numberSubtables);
+    errdefer allocator.free(records);
+    for (records) |*rec| {
+      rec.platformID = @enumFromInt(readT(u16, bytes, &index));
+      rec.platformSpecificID = readT(u16, bytes, &index);
+      rec.offset = readT(u32, bytes, &index);
+    }
+
+    // 3. Read Subtables
+    // Note: The records contain offsets relative to the start of the Cmap Table.
+    // We must jump to those offsets to read the actual subtable data.
+    const tables = try allocator.alloc(CmapSubtable, header.numberSubtables);
+    errdefer allocator.free(tables);
+
+    for (records, 0..) |rec, i| {
+      // Create a cursor at the offset for this specific subtable
+      var sub_cursor = @as(usize, rec.offset);
+
+      // Check bounds
+      if (sub_cursor >= bytes.len) return error.InvalidOffset;
+
+      // Peek at the format (first u16) to determine how to read the length
+      // We can't use readT here initially because we don't want to advance sub_cursor yet
+      const format = readT(u16, bytes, &sub_cursor);
+
+      var length: u32 = 0;
+      var language: u16 = 0;
+      var header_size: usize = 0;
+
+      // Handle standard formats vs Format 12 (High capacity)
+      if (format == 12 or format == 13) {
+        // Format 12 Header: format(u16) + reserved(u16) + length(u32) + language(u32) + ...
+        _ = readT(u16, bytes, &sub_cursor); // skip reserved
+        length = readT(u32, bytes, &sub_cursor);
+        language = @truncate(readT(u32, bytes, &sub_cursor)); // Truncate u32 lang to match your struct
+        header_size = 12; // Bytes consumed so far
+      } else {
+        // Format 0, 4, 6 Header: format(u16) + length(u16) + language(u16) + ...
+        length = readT(u16, bytes, &sub_cursor);
+        language = readT(u16, bytes, &sub_cursor);
+        header_size = 6; // Bytes consumed so far
+      }
+
+      // Calculate size of the remaining body (the "glyph_index" payload)
+      // Safety check to ensure the font file isn't truncated
+      if (rec.offset + length > bytes.len) return error.EndOfStream;
+
+      const payload_size = length - header_size;
+
+      const raw_payload = bytes[sub_cursor..][0..payload_size];
+
+      tables[i] = CmapSubtable{
+        .format = format,
+        .length = @truncate(length),
+        .language = language,
+        .glyph_index = raw_payload,
+      };
+    }
+
+    return CmapTable{
+      .header = header,
+      .records = records,
+      .tables = tables,
+    };
+  }
+
+  pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
+    allocator.free(self.records);
+    allocator.free(self.tables);
+  }
+
+  pub fn pretty_print(self: Self) void {
+    const print = std.debug.print;
+
+    print("Cmap Table:\n", .{});
+    print("  Header:\n", .{});
+    print("    Version: {d}\n", .{self.header.version});
+    print("    Num Subtables: {d}\n", .{self.header.numberSubtables});
+
+    print("  Records:\n", .{});
+    for (self.records, 0..) |rec, i| {
+      print("    [{d}] Platform: {s} ({d})\n", .{
+        i, @tagName(rec.platformID), @intFromEnum(rec.platformID)
+      });
+      print("        Encoding ID: {d}\n", .{rec.platformSpecificID});
+      print("        Offset: 0x{x}\n", .{rec.offset});
+    }
+
+    print("  Subtables:\n", .{});
+    for (self.tables, 0..) |table, i| {
+      print("    [{d}] Format {d}\n", .{ i, table.format });
+      print("        Length: {d}\n", .{table.length});
+      print("        Language: {d}\n", .{table.language});
+
+      // Print a small preview of the raw bytes
+      print("        Raw Data: {d} bytes [ ", .{table.glyph_index.len});
+      const preview_len = @min(table.glyph_index.len, 8);
+      for (table.glyph_index[0..preview_len]) |b| {
+          print("{x:0>2} ", .{b});
+      }
+      if (table.glyph_index.len > preview_len) {
+          print("... ", .{});
+      }
+      print("]\n", .{});
+    }
+}
 };
 
 const Point = struct {
@@ -312,13 +472,13 @@ pub const TtfFont = struct {
   table_records: []TableRecord,
 
   pub fn load(allocator: std.mem.Allocator, ttfcontent: []const u8) !TtfFont {
-    const offset_table = OffsetTable.fromBytes(ttfcontent);
+    var offset: usize = 0;
+    const offset_table = OffsetTable.fromBytes(ttfcontent, &offset);
     const table_records = try allocator.alloc(TableRecord, offset_table.num_tables);
-
-    var offset: usize = 12; // size of TableRecord struct
-    for (0..offset_table.num_tables) |i| {
-      table_records[i] = TableRecord.fromBytes(ttfcontent[offset..]);
-      offset += 16;
+    std.log.debug("offset {} offset_table {any}", .{ offset, offset_table });
+    for (table_records) |*tr| {
+      tr.* = TableRecord.fromBytes(ttfcontent, &offset);
+      std.log.debug("offset {}", .{ offset });
     }
 
     return TtfFont{
@@ -347,6 +507,15 @@ pub const TtfFont = struct {
     if (head_record) |hr| {
       const head_table = try HeadTable.init(self.ttfcontent[hr.offset..hr.offset + hr.length]);
       return head_table;
+    }
+    return error.NoHeadTable;
+  }
+
+  pub fn getCmap(self: Self, allocator: std.mem.Allocator) !CmapTable {
+    const cmap_record = self.getTableRecords("cmap");
+    if (cmap_record) |cr| {
+      const cmap_table = try CmapTable.init(allocator, self.ttfcontent[cr.offset..cr.offset + cr.length]);
+      return cmap_table;
     }
     return error.NoHeadTable;
   }

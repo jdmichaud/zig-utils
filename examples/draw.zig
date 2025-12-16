@@ -95,6 +95,9 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
     }
 
     std.log.debug("{any}", .{ ttf_font.getHead() });
+    const cmap_table = try ttf_font.getCmap(allocator);
+    defer cmap_table.deinit(allocator);
+    cmap_table.pretty_print();
 
     var quit = false;
     var render_time: i128 = 0;
