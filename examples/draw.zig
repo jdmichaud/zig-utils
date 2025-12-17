@@ -94,10 +94,13 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
         std.log.debug("{s} 0x{x:0>8} {}", .{ tr.tag, tr.offset, tr.length });
     }
 
-    std.log.debug("{any}", .{ ttf_font.getHead() });
-    const cmap_table = try ttf_font.getCmap(allocator);
-    defer cmap_table.deinit(allocator);
-    cmap_table.pretty_print();
+    std.log.debug("{any}", .{ ttf_font.head_table });
+    ttf_font.cmap_table.pretty_print();
+    std.log.debug("{} glyphs", .{ ttf_font.loca_table.count() });
+
+    var glyph_a = try ttf_font.getGlyph(allocator, 'A');
+    defer glyph_a.deinit(allocator);
+    std.log.debug("{any}", .{ glyph_a });
 
     var quit = false;
     var render_time: i128 = 0;

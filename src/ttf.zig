@@ -156,11 +156,19 @@ pub const HeadTable = struct {
   }
 };
 
+// cmap maps character codes (e.g. Unicode) to glyph IDs (GIDs). The GID indexes
+// into the `offsets` field used by loca. loca stores offsets (or indices) into
+// the glyf table relative to the beginning of the glyf table for each GID. Each
+// loca entry gives the start (and next gives the end) of a glyph. glyf contains
+// the actual glyph data (outlines, components, hints).
+// Flow: char code → cmap → GID → loca → glyf.
+// In other words: glyf[loca.offsets[cmap[code_point]]]
+
 const CmapHeader = struct {
   /// Version number (Set to zero)
   version: u16,
   /// Number of encoding subtables
-  numberSubtables: u16,
+  number_sub_tables: u16,
 };
 
 const PlatformID = enum(u16) {
@@ -183,20 +191,207 @@ const CmapRecord = struct {
   offset: u32,
 };
 
+/// The specific implementation for Format 4 (Standard BMP)
+const CmapFormat4 = struct {
+  seg_count: u16,
+  // We store pre-calculated SLICES.
+  // This means we don't have to do "offset = 14 + i * 2" math every time.
+  end_counts: []const u8,
+  start_counts: []const u8,
+  id_deltas: []const u8,
+  id_range_offsets: []const u8,
+  glyph_id_array: []const u8, // The rest of the data
+
+  // We need the full subtable data for idRangeOffset relative math
+  raw_subtable: []const u8,
+  idRangeOffset_start_pos: usize,
+
+  pub fn init(bytes: []const u8) !CmapFormat4 {
+    if (bytes.len < 14) return error.InvalidCmapTable;
+
+    const seg_countX2 = std.mem.readInt(u16, bytes[6..8], .big);
+    const seg_count = seg_countX2 / 2;
+
+    // Calculate offsets ONCE
+    const end_cnt_off = 14;
+    const reserved_pad = end_cnt_off + seg_countX2;
+    const start_cnt_off = reserved_pad + 2;
+    const id_delta_off = start_cnt_off + seg_countX2;
+    const id_range_off = id_delta_off + seg_countX2;
+    const glyph_id_arr_off = id_range_off + seg_countX2;
+
+    if (glyph_id_arr_off > bytes.len) return error.InvalidCmapTable;
+
+    return CmapFormat4{
+      .seg_count = seg_count,
+      .end_counts = bytes[end_cnt_off..][0..seg_countX2],
+      .start_counts = bytes[start_cnt_off..][0..seg_countX2],
+      .id_deltas = bytes[id_delta_off..][0..seg_countX2],
+      .id_range_offsets = bytes[id_range_off..][0..seg_countX2],
+      .glyph_id_array = bytes[glyph_id_arr_off..], // The rest
+      .raw_subtable = bytes,
+      .idRangeOffset_start_pos = id_range_off,
+    };
+  }
+
+  pub fn get(self: CmapFormat4, cp: u32) u32 {
+    if (cp > 65535) return 0;
+    const cp_u16 = @as(u16, @truncate(cp));
+
+    // 1. Find Segment (Linear search is fast enough for small seg_counts,
+    // but Binary Search is better for full fonts. Kept simple here.)
+    var i: u16 = 0;
+    while (i < self.seg_count) : (i += 1) {
+      // We read directly from our pre-sliced array
+      const end = std.mem.readInt(u16, self.end_counts[i * 2..][0..2], .big);
+      if (end >= cp_u16) break;
+    }
+    if (i == self.seg_count) return 0;
+
+    const start = std.mem.readInt(u16, self.start_counts[i * 2..][0..2], .big);
+    if (start > cp_u16) return 0;
+
+    const id_delta = std.mem.readInt(u16, self.id_deltas[i * 2..][0..2], .big);
+    const id_range_offset = std.mem.readInt(u16, self.id_range_offsets[i * 2..][0..2], .big);
+
+    if (id_range_offset == 0) {
+      return @as(u16, @truncate(cp_u16 +% id_delta));
+    }
+
+    // Pointer math logic
+    // Location of the specific rangeOffset we just read
+    const current_iro_loc = self.idRangeOffset_start_pos + (i * 2);
+
+    // Offset relative to that location
+    const offset = current_iro_loc + id_range_offset + (cp_u16 - start) * 2;
+
+    if (offset + 2 > self.raw_subtable.len) return 0;
+
+    const glyph = std.mem.readInt(u16, self.raw_subtable[offset..][0..2], .big);
+    if (glyph == 0) return 0;
+
+    return @as(u16, @truncate(glyph +% id_delta));
+  }
+
+  /// Calculates the total number of characters mapped by this subtable
+  pub fn getMappedCharCount(self: CmapFormat4) u32 {
+    var total: u32 = 0;
+    var i: u16 = 0;
+    while (i < self.seg_count) : (i += 1) {
+      const start = std.mem.readInt(u16, self.start_counts[i * 2..][0..2], .big);
+      const end = std.mem.readInt(u16, self.end_counts[i * 2..][0..2], .big);
+
+      // Add the range size (inclusive)
+      if (end >= start) {
+        total += (end - start) + 1;
+      }
+    }
+    return total;
+  }
+};
+
+/// The specific implementation for Format 12 (Modern)
+const CmapFormat12 = struct {
+  num_groups: u32,
+  groups_data: []const u8, // Slice starting at the first group
+
+  pub fn init(bytes: []const u8) !CmapFormat12 {
+    if (bytes.len < 16) return error.InvalidCmapTable;
+
+    const num_groups = std.mem.readInt(u32, bytes[12..16], .big);
+
+    // Verify we have enough bytes for all groups (12 bytes per group)
+    if (16 + num_groups * 12 > bytes.len) return error.InvalidCmapTable;
+
+    return CmapFormat12{
+      .num_groups = num_groups,
+      .groups_data = bytes[16..],
+    };
+  }
+
+  pub fn get(self: CmapFormat12, cp: u32) u32 {
+    // Binary search is ideal here, but linear for clarity:
+    var i: u32 = 0;
+    var offset: usize = 0;
+    while (i < self.num_groups) : (i += 1) {
+      const start = std.mem.readInt(u32, self.groups_data[offset..][0..4], .big);
+      const end = std.mem.readInt(u32, self.groups_data[offset + 4..][0..4], .big);
+
+      if (cp >= start and cp <= end) {
+        const start_id = std.mem.readInt(u32, self.groups_data[offset + 8..][0..4], .big);
+        return start_id + (cp - start);
+      }
+      offset += 12;
+    }
+    return 0;
+  }
+
+  /// Calculates the total number of characters mapped by this subtable
+  pub fn getMappedCharCount(self: CmapFormat12) u32 {
+    var total: u32 = 0;
+    var i: u32 = 0;
+    var offset: usize = 0;
+    while (i < self.num_groups) : (i += 1) {
+      const start = std.mem.readInt(u32, self.groups_data[offset..][0..4], .big);
+      const end = std.mem.readInt(u32, self.groups_data[offset + 4..][0..4], .big);
+
+      total += (end - start) + 1;
+
+      offset += 12;
+    }
+    return total;
+  }};
+
+/// The Container that holds "One of the specific implementations"
+pub const CmapMapper = union(enum) {
+  fmt4: CmapFormat4,
+  fmt12: CmapFormat12,
+  unknown: void,
+
+  /// This is the "Factory" function
+  pub fn init(bytes: []const u8) !CmapMapper {
+    if (bytes.len < 2) return error.InvalidCmapTable;
+    const format = std.mem.readInt(u16, bytes[0..2], .big);
+
+    switch (format) {
+      4 => return CmapMapper{ .fmt4 = try CmapFormat4.init(bytes) },
+      12 => return CmapMapper{ .fmt12 = try CmapFormat12.init(bytes) },
+      else => return CmapMapper{ .unknown = {} },
+    }
+  }
+
+  /// The single unified call point
+  pub fn getGlyph(self: CmapMapper, code_point: u32) u32 {
+    switch (self) {
+      .fmt4 => |impl| return impl.get(code_point),
+      .fmt12 => |impl| return impl.get(code_point),
+      .unknown => return 0,
+    }
+  }
+
+  pub fn getMappedCharCount(self: CmapMapper) u32 {
+    switch (self) {
+      .fmt4 => |impl| return impl.getMappedCharCount(),
+      .fmt12 => |impl| return impl.getMappedCharCount(),
+      .unknown => return 0,
+    }
+  }
+};
+
 const CmapSubtable = struct {
   format: u16,
   /// length in bytes including this structure
   length: u16,
   /// Language code
   language: u16,
-  /// An array that maps character codes to glyph index values
-  glyph_index: []const u8,
+  /// The object that will fetch the glyph ID depending on the format of the subtable
+  mapper: CmapMapper,
 };
 
 pub const CmapTable = struct {
   header: CmapHeader,
   records: []CmapRecord,
-  tables: []CmapSubtable,
+  sub_tables: []CmapSubtable,
 
   const Self = @This();
   pub fn init(allocator: std.mem.Allocator, bytes: []const u8) !CmapTable {
@@ -205,11 +400,11 @@ pub const CmapTable = struct {
     // 1. Read the Header
     const header = CmapHeader{
       .version = readT(u16, bytes, &index),
-      .numberSubtables = readT(u16, bytes, &index),
+      .number_sub_tables = readT(u16, bytes, &index),
     };
 
     // 2. Allocate and Read Encoding Records
-    const records = try allocator.alloc(CmapRecord, header.numberSubtables);
+    const records = try allocator.alloc(CmapRecord, header.number_sub_tables);
     errdefer allocator.free(records);
     for (records) |*rec| {
       rec.platformID = @enumFromInt(readT(u16, bytes, &index));
@@ -220,12 +415,13 @@ pub const CmapTable = struct {
     // 3. Read Subtables
     // Note: The records contain offsets relative to the start of the Cmap Table.
     // We must jump to those offsets to read the actual subtable data.
-    const tables = try allocator.alloc(CmapSubtable, header.numberSubtables);
-    errdefer allocator.free(tables);
+    const sub_tables = try allocator.alloc(CmapSubtable, header.number_sub_tables);
+    errdefer allocator.free(sub_tables);
 
     for (records, 0..) |rec, i| {
       // Create a cursor at the offset for this specific subtable
       var sub_cursor = @as(usize, rec.offset);
+      const subtable_bytes = bytes[sub_cursor..];
 
       // Check bounds
       if (sub_cursor >= bytes.len) return error.InvalidOffset;
@@ -256,28 +452,24 @@ pub const CmapTable = struct {
       // Safety check to ensure the font file isn't truncated
       if (rec.offset + length > bytes.len) return error.EndOfStream;
 
-      const payload_size = length - header_size;
-
-      const raw_payload = bytes[sub_cursor..][0..payload_size];
-
-      tables[i] = CmapSubtable{
+      sub_tables[i] = CmapSubtable{
         .format = format,
         .length = @truncate(length),
         .language = language,
-        .glyph_index = raw_payload,
+        .mapper = try CmapMapper.init(subtable_bytes),
       };
     }
 
     return CmapTable{
       .header = header,
       .records = records,
-      .tables = tables,
+      .sub_tables = sub_tables,
     };
   }
 
   pub fn deinit(self: Self, allocator: std.mem.Allocator) void {
     allocator.free(self.records);
-    allocator.free(self.tables);
+    allocator.free(self.sub_tables);
   }
 
   pub fn pretty_print(self: Self) void {
@@ -286,7 +478,7 @@ pub const CmapTable = struct {
     print("Cmap Table:\n", .{});
     print("  Header:\n", .{});
     print("    Version: {d}\n", .{self.header.version});
-    print("    Num Subtables: {d}\n", .{self.header.numberSubtables});
+    print("    Num Subtables: {d}\n", .{self.header.number_sub_tables});
 
     print("  Records:\n", .{});
     for (self.records, 0..) |rec, i| {
@@ -298,23 +490,70 @@ pub const CmapTable = struct {
     }
 
     print("  Subtables:\n", .{});
-    for (self.tables, 0..) |table, i| {
+    for (self.sub_tables, 0..) |table, i| {
       print("    [{d}] Format {d}\n", .{ i, table.format });
-      print("        Length: {d}\n", .{table.length});
+      print("        Length: {d} bytes\n", .{table.length});
       print("        Language: {d}\n", .{table.language});
 
       // Print a small preview of the raw bytes
-      print("        Raw Data: {d} bytes [ ", .{table.glyph_index.len});
-      const preview_len = @min(table.glyph_index.len, 8);
-      for (table.glyph_index[0..preview_len]) |b| {
-          print("{x:0>2} ", .{b});
-      }
-      if (table.glyph_index.len > preview_len) {
-          print("... ", .{});
-      }
-      print("]\n", .{});
+      print("        Glyphs count: {d} glyphs\n", .{table.mapper.getMappedCharCount()});
     }
-}
+  }
+};
+
+pub const LocaTable = struct {
+    offsets: []const u8,
+    is_short: bool,
+
+    const Self = @This();
+
+    pub fn init(index_to_loc_format: i16, bytes: []const u8) !Self {
+      // Validate format (Standard says 0 or 1)
+      if (index_to_loc_format != 0 and index_to_loc_format != 1) {
+        return error.InvalidLocaFormat;
+      }
+
+      const is_short = (index_to_loc_format == 0);
+
+      // Optional: Sanity check length alignment
+      // Short (u16) needs 2-byte alignment, Long (u32) needs 4-byte
+      const alignment = if (is_short) @as(usize, 2) else 4;
+      if (bytes.len % alignment != 0) return error.MalformedLocaTable;
+
+      return Self{
+        .offsets = bytes,
+        .is_short = is_short,
+      };
+    }
+
+    pub fn get(self: Self, glyph_id: usize) ?u32 {
+      if (self.is_short) {
+        // --- Format 0 (Short) ---
+        // Stride is 2 bytes
+        const pos = glyph_id * 2;
+        if (pos + 2 > self.offsets.len) return null;
+
+        // Read u16 and multiply by 2
+        const val = std.mem.readInt(u16, self.offsets[pos..][0..2], .big);
+        return @as(u32, val) * 2;
+      } else {
+        // --- Format 1 (Long) ---
+        // Stride is 4 bytes
+        const pos = glyph_id * 4;
+        if (pos + 4 > self.offsets.len) return null;
+
+        // Read u32 directly
+        return std.mem.readInt(u32, self.offsets[pos..][0..4], .big);
+      }
+    }
+
+    pub fn count(self: Self) usize {
+      if (self.is_short) {
+        return self.offsets.len / 2;
+      } else {
+        return self.offsets.len / 4;
+      }
+  }
 };
 
 const Point = struct {
@@ -324,6 +563,27 @@ const Point = struct {
 };
 
 pub const GlyphTable = struct {
+  bytes: []const u8,
+
+  const Self = @This();
+  pub fn init(bytes: []const u8) Self {
+    return Self{
+      .bytes = bytes,
+    };
+  }
+
+  pub fn getGlyph(self: Self, allocator: std.mem.Allocator, code_point: u32,
+    cmap_sub_table: CmapSubtable, loca_table: LocaTable) !Glyph {
+    const offset = loca_table.offsets[cmap_sub_table.mapper.getGlyph(code_point)];
+    std.log.debug("code_point {} glyph id {} offset {}", .{ code_point, cmap_sub_table.mapper.getGlyph(code_point), offset });
+    if (offset >= self.bytes.len) {
+      return error.InvalidGlyphOffset;
+    }
+    return Glyph.init(allocator, self.bytes[offset..]);
+  }
+};
+
+pub const Glyph = struct {
   number_of_contours: i16,
   x_min: i16,
   y_min: i16,
@@ -334,25 +594,28 @@ pub const GlyphTable = struct {
   end_pts_of_contours: []u16, // needed for contour iterator
   instructions: []const u8,
 
+  const Self = @This();
   /// Initialize a simple glyph from bytes
-  pub fn init(bytes: []const u8, allocator: *std.mem.Allocator) !GlyphTable {
+  pub fn init(allocator: std.mem.Allocator, bytes: []const u8) !Self {
     var off: usize = 0;
 
-    const number_of_contours = @as(usize, @intCast(readT(i16, bytes, &off)));
+    const number_of_contours = readT(i16, bytes, &off);
+    const number_of_contours_usize = @as(usize, @intCast(number_of_contours));
     const x_min = readT(i16, bytes, &off);
     const y_min = readT(i16, bytes, &off);
     const x_max = readT(i16, bytes, &off);
     const y_max = readT(i16, bytes, &off);
 
-    if (number_of_contours <= 0) return error.UnsupportedGlyph;
+    if (number_of_contours_usize <= 0) return error.UnsupportedGlyph;
 
     // --- Read endPtsOfContours ---
-    var end_pts_of_contours: []u16 = try allocator.alloc(u16, number_of_contours);
-    for (0..number_of_contours) |i| {
+    var end_pts_of_contours: []u16 = try allocator.alloc(u16, number_of_contours_usize);
+    errdefer allocator.free(end_pts_of_contours);
+    for (0..number_of_contours_usize) |i| {
       end_pts_of_contours[i] = readT(u16, bytes, &off);
     }
 
-    const total_points = @as(usize, @intCast(end_pts_of_contours[number_of_contours - 1])) + 1;
+    const total_points = @as(usize, @intCast(end_pts_of_contours[number_of_contours_usize - 1])) + 1;
 
     // --- Read instructions ---
     const instruction_length: usize = @as(usize, @intCast(readT(u16, bytes, &off)));
@@ -361,6 +624,7 @@ pub const GlyphTable = struct {
 
     // --- Read flags ---
     var flags: []u8 = try allocator.alloc(u8, total_points);
+    defer allocator.free(flags);
     {
       var point_index: usize = 0;
       while (point_index < total_points) {
@@ -383,12 +647,12 @@ pub const GlyphTable = struct {
 
     // --- Read xCoordinates ---
     var x_coords: []i16 = try allocator.alloc(i16, total_points);
+    defer allocator.free(x_coords);
     var x: i16 = 0;
     for (0..total_points) |point_index| {
       const flag = flags[point_index];
       if ((flag & 0x02) != 0) { // 1-byte x
-        const dx: u8 = bytes[off];
-        off += 1;
+        const dx = readT(u8, bytes, &off);
         x += if ((flag & 0x10) != 0) @as(i16, @intCast(dx)) else -@as(i16, @intCast(dx));
       } else if ((flag & 0x10) == 0) { // 2-byte x
         x += readT(i16, bytes, &off);
@@ -398,12 +662,12 @@ pub const GlyphTable = struct {
 
     // --- Read yCoordinates ---
     var y_coords: []i16 = try allocator.alloc(i16, total_points);
+    defer allocator.free(y_coords);
     var y: i16 = 0;
     for (0..total_points) |point_index| {
       const flag = flags[point_index];
       if ((flag & 0x04) != 0) { // 1-byte y
-        const dy: u8 = bytes[off];
-        off += 1;
+        const dy = readT(u8, bytes, &off);
         y += if ((flag & 0x20) != 0) @as(i16, @intCast(dy)) else -@as(i16, @intCast(dy));
       } else if ((flag & 0x20) == 0) { // 2-byte y
         y += readT(i16, bytes, &off);
@@ -413,6 +677,7 @@ pub const GlyphTable = struct {
 
     // --- Build points array ---
     var points: []Point = try allocator.alloc(Point, total_points);
+    errdefer allocator.free(points);
     for (0..total_points) |point_index| {
       points[point_index] = Point{
         .x = x_coords[point_index],
@@ -421,12 +686,7 @@ pub const GlyphTable = struct {
       };
     }
 
-    // Free temporary arrays
-    allocator.free(flags);
-    allocator.free(x_coords);
-    allocator.free(y_coords);
-
-    return GlyphTable{
+    return Glyph {
       .number_of_contours = number_of_contours,
       .x_min = x_min,
       .y_min = y_min,
@@ -438,8 +698,13 @@ pub const GlyphTable = struct {
     };
   }
 
+  pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+    allocator.free(self.end_pts_of_contours);
+    allocator.free(self.points);
+  }
+
   /// Contour iterator
-  pub fn contours(self: *GlyphTable) ContourIterator {
+  pub fn contours(self: *Glyph) ContourIterator {
     return ContourIterator{
       .glyph = self,
       .index = 0,
@@ -448,7 +713,7 @@ pub const GlyphTable = struct {
   }
 
   pub const ContourIterator = struct {
-    glyph: *GlyphTable,
+    glyph: *Glyph,
     index: usize,
     start_point: usize,
 
@@ -471,30 +736,49 @@ pub const TtfFont = struct {
   offset_table: OffsetTable,
   table_records: []TableRecord,
 
+  head_table: HeadTable,
+  cmap_table: CmapTable,
+  loca_table: LocaTable,
+  glyf_table: GlyphTable,
+
   pub fn load(allocator: std.mem.Allocator, ttfcontent: []const u8) !TtfFont {
     var offset: usize = 0;
     const offset_table = OffsetTable.fromBytes(ttfcontent, &offset);
     const table_records = try allocator.alloc(TableRecord, offset_table.num_tables);
-    std.log.debug("offset {} offset_table {any}", .{ offset, offset_table });
+
     for (table_records) |*tr| {
       tr.* = TableRecord.fromBytes(ttfcontent, &offset);
       std.log.debug("offset {}", .{ offset });
     }
 
+    const hr = getTableRecords(table_records, "head") orelse return error.NoHeadTable;
+    const head_table = try HeadTable.init(ttfcontent[hr.offset..hr.offset + hr.length]);
+    const cr = getTableRecords(table_records, "cmap") orelse return error.NoCmapTable;
+    const cmap_table = try CmapTable.init(allocator, ttfcontent[cr.offset..cr.offset + cr.length]);
+    const lr = getTableRecords(table_records, "loca") orelse return error.NoLocaTable;
+    const loca_table = try LocaTable.init(head_table.index_to_loc_format, ttfcontent[lr.offset..lr.offset + lr.length]);
+    const gr = getTableRecords(table_records, "glyf") orelse return error.NoGlyphTable;
+    const glyf_table = GlyphTable.init(ttfcontent[gr.offset..gr.offset + gr.length]);
+
     return TtfFont{
       .ttfcontent = ttfcontent,
       .offset_table = offset_table,
       .table_records = table_records,
+      .head_table = head_table,
+      .cmap_table = cmap_table,
+      .loca_table = loca_table,
+      .glyf_table = glyf_table,
     };
   }
 
   const Self = @This();
   pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     allocator.free(self.table_records);
+    self.cmap_table.deinit(allocator);
   }
 
-  fn getTableRecords(self: Self, tag: []const u8) ?TableRecord {
-    for (self.table_records) |table_record| {
+  fn getTableRecords(table_records: []const TableRecord, tag: []const u8) ?TableRecord {
+    for (table_records) |table_record| {
       if (std.mem.eql(u8, &table_record.tag, tag)) {
         return table_record;
       }
@@ -502,21 +786,7 @@ pub const TtfFont = struct {
     return null;
   }
 
-  pub fn getHead(self: Self) !HeadTable {
-    const head_record = self.getTableRecords("head");
-    if (head_record) |hr| {
-      const head_table = try HeadTable.init(self.ttfcontent[hr.offset..hr.offset + hr.length]);
-      return head_table;
-    }
-    return error.NoHeadTable;
-  }
-
-  pub fn getCmap(self: Self, allocator: std.mem.Allocator) !CmapTable {
-    const cmap_record = self.getTableRecords("cmap");
-    if (cmap_record) |cr| {
-      const cmap_table = try CmapTable.init(allocator, self.ttfcontent[cr.offset..cr.offset + cr.length]);
-      return cmap_table;
-    }
-    return error.NoHeadTable;
+  pub fn getGlyph(self: Self, allocator: std.mem.Allocator, code_point: u32) !Glyph {
+    return self.glyf_table.getGlyph(allocator, code_point, self.cmap_table.sub_tables[1], self.loca_table);
   }
 };
