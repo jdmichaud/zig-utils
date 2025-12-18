@@ -10,12 +10,14 @@ fn asf32(value: anytype) f32 {
 const PathCommandType = enum {
   move_to,
   line_to,
+  quad_to,
   close_path,
 };
 
 const PathCommand = union(PathCommandType) {
   move_to: struct { i16, i16 },
   line_to: struct { i16, i16 },
+  quad_to: struct { cpx: i16, cpy: i16, x: i16, y: i16 },
   close_path: void,
 };
 
@@ -347,6 +349,11 @@ pub const DrawContext = struct {
     }
   }
 
+  pub fn setLineDash(segments: []const f32) void {
+    _ = segments;
+    @panic("unimplemented");
+  }
+
   //
   // path functions
   //
@@ -356,6 +363,9 @@ pub const DrawContext = struct {
   }
   pub fn lineTo(self: *Self, x: i16, y: i16) void {
     self.path_command_stack.append(PathCommand{ .line_to = .{ x, y } }) catch {};
+  }
+  pub fn quadraticCurveTo(self: *Self, cpx: i16, cpy: i16, x: i16, y: i16) void {
+    self.path_command_stack.append(PathCommand{ .quad_to = .{ .x = x, .y = y, .cpx= cpx, .cpy = cpy } }) catch {};
   }
   pub fn closePath(self: *Self) void {
     self.path_command_stack.append(PathCommand{ .close_path = {} }) catch {};
@@ -375,6 +385,10 @@ pub const DrawContext = struct {
           self.line(pen[0], pen[1], position[0], position[1]);
           pen[0] = position[0];
           pen[1] = position[1];
+        },
+        PathCommand.quad_to => |parameters| {
+          _ = parameters;
+          @panic("unimplemented");
         },
         PathCommand.close_path => {
           self.line(pen[0], pen[1], first_point[0], first_point[1]);
@@ -404,6 +418,10 @@ pub const DrawContext = struct {
           vertices.append(self.transformPoint(
             @floatFromInt(pen[0]),
             @floatFromInt(pen[1]))) catch {};
+        },
+        PathCommand.quad_to => |parameters| {
+          _ = parameters;
+          @panic("unimplemented");
         },
         PathCommand.close_path => {
           pen[0] = first_point[0];

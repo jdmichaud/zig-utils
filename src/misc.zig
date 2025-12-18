@@ -98,7 +98,11 @@ pub fn x11checkerboard(width: usize, height: usize, output: []u32) void {
 
 // int to int (T) cast
 pub fn asInt(comptime T: type, integer: anytype) T {
-  return @as(T, @intCast(integer));
+  switch (@typeInfo(@TypeOf(integer))) {
+    .int, .comptime_int => return @as(T, @intCast(integer)),
+    .float, .comptime_float => return @as(T, @intFromFloat(integer)),
+    else => @compileError("unhandled typed"),
+  }
 }
 
 // From an int to a float T

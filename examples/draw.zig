@@ -94,34 +94,69 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
         std.log.debug("{s} 0x{x:0>8} {}", .{ tr.tag, tr.offset, tr.length });
     }
 
-    std.log.debug("{any}", .{ ttf_font.head_table });
+    ttf_font.head_table.pretty_print();
     ttf_font.cmap_table.pretty_print();
     std.log.debug("{} glyphs", .{ ttf_font.loca_table.count() });
 
-    var glyph_a = try ttf_font.getGlyph(allocator, 'A');
-    defer glyph_a.deinit(allocator);
-    std.log.debug("{any}", .{ glyph_a });
+    for (text) |c| {
+        var glyph = try ttf_font.getGlyph(allocator, c);
+        defer glyph.deinit(allocator);
+        var contours = glyph.contours();
+        std.log.debug("{c} {} contours", .{ c, glyph.number_of_contours });
+        std.log.debug("  bbox {d} {d} {d} {d}", .{ glyph.x_min, glyph.y_min, glyph.x_max, glyph.y_max });
+        var i: usize = 0;
+        while (contours.next()) |points| {
+            std.log.debug("contour {}", .{ i });
+            for (points) |point| {
+                std.log.debug("  {any}", .{ point });
+            }
+            i += 1;
+        }
+    }
 
     var quit = false;
     var render_time: i128 = 0;
 
-    const font_width = 100;
-    const font_height = 100;
-
-    var x: i32 = @intCast(@divTrunc(width, 2) - @divTrunc(font_width, 2));
-    var y: i32 = @intCast(@divTrunc(height, 2) - @divTrunc(font_height, 2));
+    var x: i32 = 0;
+    var y: i32 = 0;
     const angle = 0;
     var zoom_factor: f32 = 1.0;
 
     var mouse_position: [2]i32 = .{ 0, 0 };
     var mouse_buttons: u3 = 0;
-    _ = text;
+
+    var t_glyph = try ttf_font.getGlyph(allocator, 'e');
+    defer t_glyph.deinit(allocator);
+    const t_height = ttf_font.head_table.y_max - ttf_font.head_table.y_min;
+    const t_ratio = misc.asf32(height) / misc.asf32(t_height);
+
     while (!quit) {
         misc.x11checkerboard(width, height, context.buffer);
         context.setTransform(1, 0, 0, 1, 0, 0);
-        context.translate(misc.asf32(x) + misc.asf32(font_width) / 2, misc.asf32(y) + misc.asf32(font_height) / 2);
+        context.translate(misc.asf32(x), misc.asf32(y));
         context.rotate(angle);
         context.scale(zoom_factor, zoom_factor);
+
+        var contours = t_glyph.contours();
+        context.strokeStyle = 0xFFBBBBBB;
+        while (contours.next()) |points| {
+            var first = true;
+            context.beginPath();
+            for (points) |point| {
+                if (point.on_curve) {
+                    const point_x = misc.asf32(point.x) * t_ratio;
+                    const point_y = height - misc.asf32(point.y) * t_ratio;
+                    if (first) {
+                        first = false;
+                        context.moveTo(misc.asInt(i16, point_x), misc.asInt(i16, point_y));
+                    } else {
+                        context.lineTo(misc.asInt(i16, point_x), misc.asInt(i16, point_y));
+                    }
+                }
+            }
+            context.closePath();
+            context.stroke();
+        }
 
         while (adapter.interface.getEvent()) |event| {
             switch (event) {

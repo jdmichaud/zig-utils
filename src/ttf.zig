@@ -118,6 +118,25 @@ pub const HeadTable = struct {
   /// Must be 0
   glyph_data_format: i16,
 
+  const Self = @This();
+  pub fn pretty_print(self: Self) void {
+    const print = std.debug.print;
+
+    print("Head Table:\n", .{});
+    print("  version {} \n", .{ self.version });
+    print("  font_revision {} \n", .{ self.font_revision });
+    // print("  flags {} \n", .{ self.flags });
+    print("  units_per_em {} \n", .{ self.units_per_em });
+
+    print("  x_min {} \n", .{ self.x_min });
+    print("  y_min {} \n", .{ self.y_min });
+    print("  x_max {} \n", .{ self.x_max });
+    print("  y_max {} \n", .{ self.y_max });
+
+    print("  index_to_loc_format {} \n", .{ self.index_to_loc_format });
+    print("  glyph_data_format {} \n", .{ self.glyph_data_format });
+  }
+
   // Size of the head table
   pub const byte_len: usize = 54;
   /// Parse a `head` table from a big-endian byte slice
@@ -361,19 +380,19 @@ pub const CmapMapper = union(enum) {
   }
 
   /// The single unified call point
-  pub fn getGlyph(self: CmapMapper, code_point: u32) u32 {
+  pub fn getGlyph(self: CmapMapper, code_point: u32) !u32 {
     switch (self) {
       .fmt4 => |impl| return impl.get(code_point),
       .fmt12 => |impl| return impl.get(code_point),
-      .unknown => return 0,
+      .unknown => return error.UnknownFormat,
     }
   }
 
-  pub fn getMappedCharCount(self: CmapMapper) u32 {
+  pub fn getMappedCharCount(self: CmapMapper) !u32 {
     switch (self) {
       .fmt4 => |impl| return impl.getMappedCharCount(),
       .fmt12 => |impl| return impl.getMappedCharCount(),
-      .unknown => return 0,
+      .unknown => return error.UnknownFormat,
     }
   }
 };
@@ -496,12 +515,21 @@ pub const CmapTable = struct {
       print("        Language: {d}\n", .{table.language});
 
       // Print a small preview of the raw bytes
-      print("        Glyphs count: {d} glyphs\n", .{table.mapper.getMappedCharCount()});
+      // switch (table.mapper.getMappedCharCount()) {
+      //   error => print("        Unknown\n", .{}),
+      //   else => |value| print("        Glyphs count: {} glyphs\n", .{ value }),
+      // }
+      if (table.mapper.getMappedCharCount()) |value| {
+        print("        Glyphs count: {} glyphs\n", .{ value });
+      } else |_| {
+        print("        Unknown format\n", .{});
+      }
     }
   }
 };
 
 pub const LocaTable = struct {
+    /// Offsets of glyphs in the glyphs table in big endian.
     offsets: []const u8,
     is_short: bool,
 
@@ -526,12 +554,12 @@ pub const LocaTable = struct {
       };
     }
 
-    pub fn get(self: Self, glyph_id: usize) ?u32 {
+    pub fn get(self: Self, glyph_id: usize) !u32 {
       if (self.is_short) {
         // --- Format 0 (Short) ---
         // Stride is 2 bytes
         const pos = glyph_id * 2;
-        if (pos + 2 > self.offsets.len) return null;
+        if (pos + 2 > self.offsets.len) return error.InvalidGlyphId;
 
         // Read u16 and multiply by 2
         const val = std.mem.readInt(u16, self.offsets[pos..][0..2], .big);
@@ -540,7 +568,7 @@ pub const LocaTable = struct {
         // --- Format 1 (Long) ---
         // Stride is 4 bytes
         const pos = glyph_id * 4;
-        if (pos + 4 > self.offsets.len) return null;
+        if (pos + 4 > self.offsets.len) return error.InvalidGlyphId;
 
         // Read u32 directly
         return std.mem.readInt(u32, self.offsets[pos..][0..4], .big);
@@ -574,11 +602,11 @@ pub const GlyphTable = struct {
 
   pub fn getGlyph(self: Self, allocator: std.mem.Allocator, code_point: u32,
     cmap_sub_table: CmapSubtable, loca_table: LocaTable) !Glyph {
-    const offset = loca_table.offsets[cmap_sub_table.mapper.getGlyph(code_point)];
-    std.log.debug("code_point {} glyph id {} offset {}", .{ code_point, cmap_sub_table.mapper.getGlyph(code_point), offset });
+    const offset = try loca_table.get(try cmap_sub_table.mapper.getGlyph(code_point));
     if (offset >= self.bytes.len) {
       return error.InvalidGlyphOffset;
     }
+
     return Glyph.init(allocator, self.bytes[offset..]);
   }
 };
@@ -600,6 +628,7 @@ pub const Glyph = struct {
     var off: usize = 0;
 
     const number_of_contours = readT(i16, bytes, &off);
+
     const number_of_contours_usize = @as(usize, @intCast(number_of_contours));
     const x_min = readT(i16, bytes, &off);
     const y_min = readT(i16, bytes, &off);
@@ -628,14 +657,12 @@ pub const Glyph = struct {
     {
       var point_index: usize = 0;
       while (point_index < total_points) {
-        const flag: u8 = bytes[off];
-        off += 1;
+        const flag = readT(u8, bytes, &off);
         flags[point_index] = flag;
         point_index += 1;
 
         if ((flag & 0x08) != 0) { // repeat flag
-          const repeat_count: u8 = bytes[off];
-          off += 1;
+          const repeat_count = readT(u8, bytes, &off);
           for (0..repeat_count) |_| {
             if (point_index >= total_points) break;
             flags[point_index] = flag;
@@ -729,6 +756,99 @@ pub const Glyph = struct {
       return contour_points;
     }
   };
+
+  pub const Segment = union(enum) {
+    move_to: Point,
+    line_to: Point,
+    quad_to: struct { cx: i16, cy: i16, x: i16, y: i16 },
+  };
+
+  /// Returns an iterator that yields drawing segments (Lines, Bezier curves)
+  pub fn curves(self: *Glyph) CurveIterator {
+    return CurveIterator{ .contour_iter = self.contours() };
+  }
+
+  pub const CurveIterator = struct {
+    contour_iter: ContourIterator,
+    current_contour: ?[]Point = null,
+    start_index: usize = 0,
+    processed_count: usize = 0,
+    state: enum { Init, Processing } = .Init,
+
+    pub fn next(self: *CurveIterator) ?Segment {
+      while (true) {
+        // Load next contour if needed
+        if (self.current_contour == null) {
+          self.current_contour = self.contour_iter.next() orelse return null;
+          self.state = .Init;
+        }
+
+        const points = self.current_contour.?;
+        const len = points.len;
+        if (len == 0) { // Safety check
+          self.current_contour = null;
+          continue;
+        }
+
+        if (self.state == .Init) {
+          // Determine the visual start point.
+          // In TTF, the first point in the array isn't always the start if it is off-curve.
+          var first_on_curve: ?usize = null;
+          for (points, 0..) |p, i| {
+            if (p.on_curve) {
+              first_on_curve = i;
+              break;
+            }
+          }
+
+          // If no on-curve point exists, start loop effectively at len-1 so logic generates midpoints
+          self.start_index = first_on_curve orelse (len - 1);
+          self.processed_count = 0;
+          self.state = .Processing;
+
+          if (first_on_curve) |idx| {
+            return Segment{ .move_to = points[idx] };
+          } else {
+            // Edge case: All points are off-curve. Start at midpoint of first and last.
+            const p0 = points[0];
+            const pl = points[len - 1];
+            const mx = @divTrunc(p0.x + pl.x, 2);
+            const my = @divTrunc(p0.y + pl.y, 2);
+            return Segment{ .move_to = Point{ .x = mx, .y = my, .on_curve = true } };
+          }
+        }
+
+        // Processing loop
+        if (self.processed_count >= len) {
+          self.current_contour = null;
+          continue;
+        }
+
+        const curr_idx = (self.start_index + 1 + self.processed_count) % len;
+        const p = points[curr_idx];
+
+        if (p.on_curve) {
+          self.processed_count += 1;
+          return Segment{ .line_to = p };
+        } else {
+          // p is off-curve (control point). Check next point.
+          const next_idx = (curr_idx + 1) % len;
+          const next_p = points[next_idx];
+
+          if (next_p.on_curve) {
+            self.processed_count += 2; // Consumed control and endpoint
+            return Segment{ .quad_to = .{ .cx = p.x, .cy = p.y, .x = next_p.x, .y = next_p.y } };
+          } else {
+            // Next is also off-curve: Implied on-curve point at midpoint
+            const mx = @divTrunc(p.x + next_p.x, 2);
+            const my = @divTrunc(p.y + next_p.y, 2);
+            self.processed_count += 1; // Consumed p, but next_p remains for next segment
+            return Segment{ .quad_to = .{ .cx = p.x, .cy = p.y, .x = mx, .y = my } };
+          }
+        }
+      }
+    }
+  };
 };
 
 pub const TtfFont = struct {
@@ -748,7 +868,6 @@ pub const TtfFont = struct {
 
     for (table_records) |*tr| {
       tr.* = TableRecord.fromBytes(ttfcontent, &offset);
-      std.log.debug("offset {}", .{ offset });
     }
 
     const hr = getTableRecords(table_records, "head") orelse return error.NoHeadTable;
@@ -787,6 +906,6 @@ pub const TtfFont = struct {
   }
 
   pub fn getGlyph(self: Self, allocator: std.mem.Allocator, code_point: u32) !Glyph {
-    return self.glyf_table.getGlyph(allocator, code_point, self.cmap_table.sub_tables[1], self.loca_table);
+    return self.glyf_table.getGlyph(allocator, code_point, self.cmap_table.sub_tables[0], self.loca_table);
   }
 };
