@@ -67,24 +67,298 @@ pub fn main() !void {
             return;
         }
         try runPrintExample(allocator, args[2], args[3]);
+    } else if (std.mem.eql(u8, example, "paint")) {
+        if (args.len != 2) {
+            std.debug.print("Usage: {s} paint\n", .{args[0]});
+            return;
+        }
+        try runPaintExample(allocator);
     } else {
         std.debug.print("Unknown example: {s}\n", .{ example });
     }
 }
 
-fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []const u8) !void {
-    const width = 800;
-    const height = 600;
+fn runPaintExample(allocator: std.mem.Allocator) !void {
+    const screen_width = 800;
+    const screen_height = 600;
+    const canvas_width = screen_width;
+    const canvas_height = screen_height;
 
-    var adapter = try ioAdapter.SDLAdapter.init(width, height);
+    var adapter = try ioAdapter.SDLAdapter.init(screen_width, screen_height);
     defer adapter.deinit();
 
-    var context = try draw.DrawContext.init(allocator, width, height);
+    var context = try draw.DrawContext.init(allocator, canvas_width, canvas_height);
     context.alpha = true;
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "low";
 
-    // Load the PNG file
+    var quit = false;
+    var render_time: i128 = 0;
+
+    var mouse_position: [2]i16 = .{ 0, 0 };
+    var mouse_buttons: u3 = 0;
+
+    var x: f32 = 0;
+    var y: f32 = 0;
+    const angle = 0;
+    var zoom_factor: f32 = 1.0;
+
+    // State machine handling the creation of lines and curves
+    // S to change from line to curves
+    // Escape to stop the current line/curve
+    const StateMachine = struct {
+        const Line = struct { start_point: @Vector(2, i16), end_point: @Vector(2, i16) };
+        const Curve = struct { start_point: @Vector(2, i16), control_point: @Vector(2, i16), end_point: @Vector(2, i16) };
+        const LineState = enum { first_point, next_point };
+        const CurveState = enum { first_point, control_point, second_point };
+        const State = union(enum) {
+            line: LineState,
+            curve: CurveState,
+        };
+
+        state: State,
+        lines: std.ArrayList(Line),
+        curves: std.ArrayList(Curve),
+        start_point: ?@Vector(2, i16) = null,
+        control_point: ?@Vector(2, i16) = null,
+
+        mouse_position: @Vector(2, i16) = .{ 0, 0 },
+
+        const Self = @This();
+        pub fn consume(self: *Self, event: ioAdapter.InputEvent) void {
+            var mouse_buttons2: u3 = 0;
+            switch (event) {
+                ioAdapter.EventType.KeyDown => |keyEvent| {
+                    switch (keyEvent.scancode) {
+                        ioAdapter.Scancode.ESCAPE => {
+                            self.start_point = null;
+                            self.control_point = null;
+                            switch (self.state) {
+                                .line => self.state = .{ .line = .first_point },
+                                .curve => self.state = .{ .curve = .first_point },
+                            }
+                        },
+                        ioAdapter.Scancode.S => {
+                            self.start_point = null;
+                            self.control_point = null;
+                            switch (self.state) {
+                                .line => self.state = .{ .curve = .first_point },
+                                .curve => self.state = .{ .line = .first_point },
+                            }
+                        },
+                        else => {},
+                    }
+                },
+                ioAdapter.EventType.MouseMove => |payload| {
+                    self.mouse_position[0] = @intCast(payload.x);
+                    self.mouse_position[1] = @intCast(payload.y);
+                },
+                ioAdapter.EventType.MouseDown => |payload| {
+                    const which_btn = misc.asInt(u2, @intFromEnum(payload.button) - 1);
+                    mouse_buttons2 |= @as(u3, 1) << which_btn;
+
+                    if (mouse_buttons2 & @intFromEnum(ioAdapter.MouseButton.Left) != 0) {
+                        switch (self.state) {
+                            .line => |step| {
+                                switch (step) {
+                                    .first_point => {
+                                        self.start_point = .{ self.mouse_position[0], self.mouse_position[1] };
+                                        self.state = .{ .line = .next_point };
+                                    },
+                                    .next_point => {
+                                        const current_point = .{ self.mouse_position[0], self.mouse_position[1] };
+                                        self.lines.append(Line{
+                                            .start_point = self.start_point.?,
+                                            .end_point = current_point,
+                                        }) catch {};
+                                        self.start_point = current_point;
+                                    },
+                                }
+                            },
+                            .curve => |step| {
+                                switch (step) {
+                                    .first_point => {
+                                        self.start_point = .{ self.mouse_position[0], self.mouse_position[1] };
+                                        self.state = .{ .curve = .control_point };
+                                    },
+                                    .control_point => {
+                                        self.control_point = .{ self.mouse_position[0], self.mouse_position[1] };
+                                        self.state = .{ .curve = .second_point };
+                                    },
+                                    .second_point => {
+                                        const current_point = .{ self.mouse_position[0], self.mouse_position[1] };
+                                        self.curves.append(Curve{
+                                            .start_point = self.start_point.?,
+                                            .control_point = self.control_point.?,
+                                            .end_point = current_point,
+                                        }) catch {};
+                                        self.start_point = null;
+                                        self.control_point = null;
+                                        self.state = .{ .curve = .first_point };
+                                    },
+                                }
+                            },
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    };
+    var state_machine: StateMachine = .{
+        .state = .{ .line = .first_point },
+        .lines = std.ArrayList(StateMachine.Line).init(allocator),
+        .curves = std.ArrayList(StateMachine.Curve).init(allocator),
+    };
+    defer {
+        state_machine.lines.deinit();
+        state_machine.curves.deinit();
+    }
+
+    while (!quit) {
+        misc.x11checkerboard(canvas_width, canvas_height, context.buffer);
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        switch (state_machine.state) {
+            .line => context.fillText("line", 10, 10),
+            .curve => context.fillText("curve", 10, 10),
+        }
+        context.rotate(angle);
+        context.translate(screen_width / 2, screen_height / 2);
+        context.scale(zoom_factor, zoom_factor);
+        context.translate(-screen_width / 2, -screen_height / 2);
+
+        context.translate(x, y);
+
+        for (state_machine.lines.items) |line| {
+            context.strokeStyle = draw.DrawContext.shadeColor(255, 255, 255);
+            context.moveTo(line.start_point[0], line.start_point[1]);
+            context.lineTo(line.end_point[0], line.end_point[1]);
+            context.stroke();
+        }
+
+        for (state_machine.curves.items) |curve| {
+            context.strokeStyle = draw.DrawContext.shadeColor(160, 160, 160);
+            context.moveTo(curve.start_point[0], curve.start_point[1]);
+            context.lineTo(curve.control_point[0], curve.control_point[1]);
+            context.moveTo(curve.control_point[0], curve.control_point[1]);
+            context.lineTo(curve.end_point[0], curve.end_point[1]);
+            context.stroke();
+
+            context.strokeStyle = draw.DrawContext.shadeColor(255, 255, 255);
+            context.moveTo(curve.start_point[0], curve.start_point[1]);
+            context.quadraticCurveTo(curve.control_point[0], curve.control_point[1], curve.end_point[0], curve.end_point[1]);
+            context.stroke();
+        }
+
+        if (state_machine.start_point) |start_point| {
+            switch (state_machine.state) {
+                .line => {
+                    context.strokeStyle = draw.DrawContext.shadeColor(255, 255, 255);
+                    context.moveTo(start_point[0], start_point[1]);
+                    context.lineTo(state_machine.mouse_position[0], state_machine.mouse_position[1]);
+                    context.stroke();
+                },
+                .curve => {
+                    context.moveTo(start_point[0], start_point[1]);
+                    if (state_machine.control_point) |control_point| {
+                        context.strokeStyle = draw.DrawContext.shadeColor(160, 160, 160);
+                        context.thickness = 4;
+                        context.moveTo(start_point[0], start_point[1]);
+                        context.lineTo(control_point[0], control_point[1]);
+                        context.lineTo(mouse_position[0], mouse_position[1]);
+                        context.stroke();
+                        context.strokeStyle = draw.DrawContext.shadeColor(255, 255, 255);
+                        context.thickness = 1;
+                        context.moveTo(start_point[0], start_point[1]);
+                        context.quadraticCurveTo(
+                            control_point[0], control_point[1],
+                            mouse_position[0], mouse_position[1],
+                        );
+                        context.stroke();
+                    } else {
+                        context.strokeStyle = draw.DrawContext.shadeColor(160, 160, 160);
+                        context.thickness = 4;
+                        context.moveTo(start_point[0], start_point[1]);
+                        context.lineTo(mouse_position[0], mouse_position[1]);
+                        context.stroke();
+                        context.strokeStyle = draw.DrawContext.shadeColor(255, 160, 160);
+                        context.thickness = 1;
+                        context.fillCircle(mouse_position[0], mouse_position[1], 2);
+                        context.stroke();
+                    }
+                },
+            }
+        }
+
+        while (adapter.interface.getEvent()) |event| {
+            switch (event) {
+                ioAdapter.EventType.KeyDown => |keyEvent| {
+                    switch (keyEvent.scancode) {
+                        ioAdapter.Scancode.ESCAPE => switch (state_machine.state) {
+                            .line => |step| switch (step) {
+                                .first_point => quit = true,
+                                else => {},
+                            },
+                            .curve => |step| switch (step) {
+                                .first_point => quit = true,
+                                .control_point => {},
+                                .second_point => {},
+                            },
+                        },
+                        else => {},
+                    }
+                },
+                ioAdapter.EventType.MouseWheel => |payload| {
+                    zoom_factor = @max(0.1, zoom_factor + if (payload.y < 0) @as(f32, -0.1) else @as(f32, 0.1));
+                },
+                ioAdapter.EventType.MouseDown => |payload| {
+                    const which_btn = misc.asInt(u2, @intFromEnum(payload.button) - 1);
+                    mouse_buttons |= @as(u3, 1) << which_btn;
+                },
+                ioAdapter.EventType.MouseUp => |payload| {
+                    const which_btn = misc.asInt(u2, (@intFromEnum(payload.button) - 1));
+                    mouse_buttons ^= mouse_buttons & (@as(u3, 1) << which_btn);
+                },
+                ioAdapter.EventType.MouseMove => |payload| {
+                    mouse_position[0] = @intCast(payload.x);
+                    mouse_position[1] = @intCast(payload.y);
+                    if (mouse_buttons & (@as(u8, 1) << @intFromEnum(ioAdapter.MouseButton.Right) - 1) != 0) {
+                        x += misc.asf32(payload.dx) / zoom_factor;
+                        y += misc.asf32(payload.dy) / zoom_factor;
+                    }
+                },
+                else => {},
+            }
+            state_machine.consume(event);
+            // std.log.debug("state_machine {any}", .{ state_machine.state });
+        }
+
+        // Only go for 60fps
+        const now = std.time.nanoTimestamp();
+        if (quit or now - render_time > 16000000) {
+            // context.clearRect(0, 0, context.width, context.height);
+            adapter.interface.drawImage(context.buffer, 0, 0, canvas_width, canvas_height);
+            adapter.interface.renderScene();
+            render_time = now;
+        }
+    }
+}
+
+fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []const u8) !void {
+    const screen_width = 800;
+    const screen_height = 600;
+    const canvas_width = screen_width;
+    const canvas_height = screen_height;
+
+    var adapter = try ioAdapter.SDLAdapter.init(screen_width, screen_height);
+    defer adapter.deinit();
+
+    var context = try draw.DrawContext.init(allocator, canvas_width, canvas_height);
+    context.alpha = true;
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "low";
+
+    // Load the TTF file
     const input = try misc.load(ttf_path);
     defer std.posix.munmap(input);
     var ttf_font = try ttf.TtfFont.load(allocator, input);
@@ -117,46 +391,91 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
     var quit = false;
     var render_time: i128 = 0;
 
-    var x: i32 = 0;
-    var y: i32 = 0;
+    var x: f32 = 0;
+    var y: f32 = 0;
     const angle = 0;
     var zoom_factor: f32 = 1.0;
 
     var mouse_position: [2]i32 = .{ 0, 0 };
     var mouse_buttons: u3 = 0;
 
-    var t_glyph = try ttf_font.getGlyph(allocator, 'e');
+    var t_glyph = try ttf_font.getGlyph(allocator, 'S');
     defer t_glyph.deinit(allocator);
     const t_height = ttf_font.head_table.y_max - ttf_font.head_table.y_min;
-    const t_ratio = misc.asf32(height) / misc.asf32(t_height);
+    const t_ratio = misc.asf32(canvas_height) / misc.asf32(t_height);
 
+    // ```
+    // pen_x = 0
+    //
+    // for each glyph:
+    //     draw glyph at:
+    //         x = pen_x + leftSideBearing
+    //     pen_x += advanceWidth
+    //     pen_x += kerning(previous_glyph, current_glyph)
+    // ```
+    // `advanceWidth` and `leftSideBearing` is to be found in `hmtx` table
+    // `kerning` is to be found in `kern` or `GPOS` table
+    // `hhea` table provides information on how to parse the `htmx` table
     while (!quit) {
-        misc.x11checkerboard(width, height, context.buffer);
+        misc.x11checkerboard(canvas_width, canvas_height, context.buffer);
         context.setTransform(1, 0, 0, 1, 0, 0);
-        context.translate(misc.asf32(x), misc.asf32(y));
         context.rotate(angle);
+        context.translate(screen_width / 2, screen_height / 2);
         context.scale(zoom_factor, zoom_factor);
+        context.translate(-screen_width / 2, -screen_height / 2);
 
-        var contours = t_glyph.contours();
+        context.translate(x, y);
+
         context.strokeStyle = 0xFFBBBBBB;
+        context.fillStyle = 0xFF0000FF;
+        var contours = t_glyph.contours();
         while (contours.next()) |points| {
             var first = true;
             context.beginPath();
             for (points) |point| {
+                const point_x = misc.asInt(i16, misc.asf32(point.x) * t_ratio);
+                const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
                 if (point.on_curve) {
-                    const point_x = misc.asf32(point.x) * t_ratio;
-                    const point_y = height - misc.asf32(point.y) * t_ratio;
                     if (first) {
                         first = false;
-                        context.moveTo(misc.asInt(i16, point_x), misc.asInt(i16, point_y));
+                        context.moveTo(point_x, point_y);
                     } else {
-                        context.lineTo(misc.asInt(i16, point_x), misc.asInt(i16, point_y));
+                        context.lineTo(point_x, point_y);
                     }
+                } else {
+                    context.fillCircle(point_x, point_y, 3);
                 }
             }
             context.closePath();
             context.stroke();
         }
+
+        var curves = t_glyph.curves();
+        context.strokeStyle = 0xFFFF0000;
+        context.beginPath();
+        while (curves.next()) |segment| {
+            switch (segment) {
+                .move_to => |point| {
+                    const point_x = misc.asInt(i16, misc.asf32(point.x) * t_ratio);
+                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
+                    context.moveTo(point_x, point_y);
+                },
+                .line_to => |point| {
+                    const point_x = misc.asInt(i16, misc.asf32(point.x) * t_ratio);
+                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
+                    context.lineTo(point_x, point_y);
+                },
+                .quad_to => |parameters| {
+                    const point_x = misc.asInt(i16, misc.asf32(parameters.x) * t_ratio);
+                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(parameters.y) * t_ratio);
+                    const control_point_x = misc.asInt(i16, misc.asf32(parameters.cx) * t_ratio);
+                    const control_point_y = misc.asInt(i16, canvas_height - misc.asf32(parameters.cy) * t_ratio);
+                    context.quadraticCurveTo(control_point_x, control_point_y, point_x, point_y);
+                },
+            }
+        }
+        context.closePath();
+        context.stroke();
 
         while (adapter.interface.getEvent()) |event| {
             switch (event) {
@@ -191,8 +510,8 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
                     mouse_position[0] = payload.x;
                     mouse_position[1] = payload.y;
                     if (mouse_buttons & @intFromEnum(ioAdapter.MouseButton.Left) != 0) {
-                        x += payload.dx;
-                        y += payload.dy;
+                        x += misc.asf32(payload.dx) / zoom_factor;
+                        y += misc.asf32(payload.dy) / zoom_factor;
                     }
                 },
                 else => {},
@@ -203,7 +522,7 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
         const now = std.time.nanoTimestamp();
         if (quit or now - render_time > 16000000) {
             // context.clearRect(0, 0, context.width, context.height);
-            adapter.interface.drawImage(context.buffer, 0, 0, width, height);
+            adapter.interface.drawImage(context.buffer, 0, 0, canvas_width, canvas_height);
             adapter.interface.renderScene();
             render_time = now;
         }

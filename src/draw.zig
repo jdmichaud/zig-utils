@@ -52,6 +52,7 @@ pub const DrawContext = struct {
   strokeStyle: u32 = 0xFFFFFFFF,
   fillStyle: u32 = 0xFFFFFFFF,
   thickness: u32 = 0,
+  line_dash_segments: []const f32 = &[_]f32{},
   alpha: bool = false,
   // For now, always considered false
   imageSmoothingEnabled: bool = false,
@@ -182,8 +183,7 @@ pub const DrawContext = struct {
   }
   // adds a translation transformation to the current matrix.
   pub fn translate(self: *Self, x: f32, y: f32) void {
-    self.transformMatrix[_e] += x;
-    self.transformMatrix[_f] += y;
+    self.transform(1, 0, 0, 1, x, y);
   }
   // erases the pixels in a rectangular area by setting them to transparent
   // black.
@@ -251,7 +251,6 @@ pub const DrawContext = struct {
   // Draws a line.
   pub fn line(self: Self, startx: i16, starty: i16, endx: i16, endy: i16) void {
     // std.debug.assert(startx >= 0 and starty >= 0 and endx >= 0 and endy >= 0);
-
     // This is commented because, although debug performances are much better,
     // release performances are worst!
     const builtin = @import("builtin");
@@ -293,7 +292,19 @@ pub const DrawContext = struct {
       }
     }
     // Otherwise, we use a general but slow algorithm
-    self.drawThickLine(startx, starty, endx, endy);
+    const ux: i16 = @intFromFloat(
+      self.transformMatrix[_a] * @as(f32, @floatFromInt(startx)) +
+      self.transformMatrix[_c] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_e]);
+    const uy: i16 = @intFromFloat(
+      self.transformMatrix[_b] * @as(f32, @floatFromInt(startx)) +
+      self.transformMatrix[_d] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_f]);
+    const vx: i16 = @intFromFloat(
+      self.transformMatrix[_a] * @as(f32, @floatFromInt(endx)) +
+      self.transformMatrix[_c] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_e]);
+    const vy: i16 = @intFromFloat(
+      self.transformMatrix[_b] * @as(f32, @floatFromInt(endx)) +
+      self.transformMatrix[_d] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_f]);
+    self.drawThickLine(ux, uy, vx, vy);
     // self.drawLineOverlap(startx, starty, endx, endy, 0);
     // self.drawLineWu(startx, starty, endx, endy, 0);
   }
@@ -349,9 +360,8 @@ pub const DrawContext = struct {
     }
   }
 
-  pub fn setLineDash(segments: []const f32) void {
-    _ = segments;
-    @panic("unimplemented");
+  pub fn setLineDash(self: *Self, segments: []const f32) void {
+    self.line_dash_segments = segments;
   }
 
   //
@@ -387,8 +397,37 @@ pub const DrawContext = struct {
           pen[1] = position[1];
         },
         PathCommand.quad_to => |parameters| {
-          _ = parameters;
-          @panic("unimplemented");
+          const lerp = struct {
+            pub fn lerp(start: @Vector(2, f32), end: @Vector(2, f32), t: f32) @Vector(2, f32) {
+              return start + (end - start) * @as(@Vector(2, f32), @splat(t));
+            }
+          }.lerp;
+
+          const start_point: @Vector(2, f32) = @floatFromInt(@as(@Vector(2, i16), pen));
+          const control_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.cpx, parameters.cpy }));
+          const end_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.x, parameters.y }));
+          var current_position = start_point;
+          const step = 50;
+          for (0..step) |t_int| {
+            const t: f32 = asf32(t_int) / (step - 1);
+            const first_segment = lerp(
+              start_point,
+              control_point,
+              t);
+            const second_segment = lerp(
+              control_point,
+              end_point,
+              t);
+            const curve = lerp(first_segment, second_segment, t);
+            self.line(
+              @intFromFloat(@round(current_position[0])),
+              @intFromFloat(@round(current_position[1])),
+              @intFromFloat(@round(curve[0])),
+              @intFromFloat(@round(curve[1])));
+            current_position = curve;
+          }
+          pen[0] = parameters.x;
+          pen[1] = parameters.y;
         },
         PathCommand.close_path => {
           self.line(pen[0], pen[1], first_point[0], first_point[1]);
@@ -1246,7 +1285,7 @@ pub const DrawContext = struct {
     tDeltaXTimes2 = tDeltaX << 1;
     tDeltaYTimes2 = tDeltaY << 1;
     // draw start pixel
-    self.plot(startx, starty, self.strokeStyle);
+    self.internalPlot(startx, starty, self.strokeStyle);
     if (tDeltaX > tDeltaY) {
       // start value represents a half step in Y direction
       tError = tDeltaYTimes2 - tDeltaX;
@@ -1256,18 +1295,18 @@ pub const DrawContext = struct {
         if (tError >= 0) {
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MAJOR) != 0) {
             // draw pixel in main direction before changing
-            self.plot(startx, starty, self.strokeStyle);
+            self.internalPlot(startx, starty, self.strokeStyle);
           }
           // change Y
           starty += tStepY;
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MINOR) != 0) {
             // draw pixel in minor direction before changing
-            self.plot(startx - tStepX, starty, self.strokeStyle);
+            self.internalPlot(startx - tStepX, starty, self.strokeStyle);
           }
           tError -= tDeltaXTimes2;
         }
         tError += tDeltaYTimes2;
-        self.plot(startx, starty, self.strokeStyle);
+        self.internalPlot(startx, starty, self.strokeStyle);
       }
     } else {
       tError = tDeltaXTimes2 - tDeltaY;
@@ -1276,17 +1315,17 @@ pub const DrawContext = struct {
         if (tError >= 0) {
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MAJOR) != 0) {
             // draw pixel in main direction before changing
-            self.plot(startx, starty, self.strokeStyle);
+            self.internalPlot(startx, starty, self.strokeStyle);
           }
           startx += tStepX;
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MINOR) != 0) {
             // draw pixel in minor direction before changing
-            self.plot(startx, starty - tStepY, self.strokeStyle);
+            self.internalPlot(startx, starty - tStepY, self.strokeStyle);
           }
           tError -= tDeltaYTimes2;
         }
         tError += tDeltaXTimes2;
-        self.plot(startx, starty, self.strokeStyle);
+        self.internalPlot(startx, starty, self.strokeStyle);
       }
     }
   }
@@ -1526,7 +1565,7 @@ test "fillPolygon" {
   var ctx = try DrawContext.init(allocator, 5, 5);
   defer ctx.deinit(allocator);
   ctx.fillPolygon(&vertices, 1);
-  try printBuffer(ctx);
+  // try printBuffer(ctx);
   // FIXME: We shouldn't paint the edge of the polygon
   try std.testing.expectEqualSlices(u32, &.{
     // 0, 0, 0, 0, 0,
@@ -1550,7 +1589,7 @@ test "fillCircle" {
   defer ctx.deinit(allocator);
   ctx.fillStyle = 1;
   ctx.fillCircle(2, 2, 2);
-  try printBuffer(ctx);
+  // try printBuffer(ctx);
   try std.testing.expectEqualSlices(u32, &.{
     0, 0, 1, 0, 0,
     0, 1, 1, 1, 0,
@@ -1583,4 +1622,36 @@ test "getInverse" {
   try std.testing.expect(-1 - inverse[3] < 0.000001);
   try std.testing.expect( 2 - inverse[4] < 0.000001);
   try std.testing.expect( 0 - inverse[5] < 0.000001);
+}
+
+test "zoom" {
+  std.testing.log_level = .debug;
+  const allocator = std.testing.allocator;
+
+  var ctx = try DrawContext.init(allocator, 5, 5);
+  defer ctx.deinit(allocator);
+  ctx.translate(2, 2);
+  ctx.scale(2, 2);
+  ctx.translate(-2, -2);
+  try std.testing.expectEqual(.{ 2e0, 0e0, 0e0, 2e0, -2e0, -2e0 }, ctx.getTransform());
+}
+
+test "line" {
+  std.testing.log_level = .debug;
+  const allocator = std.testing.allocator;
+
+  var ctx = try DrawContext.init(allocator, 5, 5);
+  defer ctx.deinit(allocator);
+  ctx.scale(2, 2);
+  ctx.strokeStyle = 1;
+  ctx.line(0, 0, 5, 5);
+  try printBuffer(ctx);
+  try std.testing.expectEqualSlices(u32, &.{
+    1, 0, 0, 0, 0,
+    0, 1, 0, 0, 0,
+    0, 0, 1, 0, 0,
+    0, 0, 0, 1, 0,
+    0, 0, 0, 0, 1,
+  }, ctx.buffer);
+  // try std.testing.expectEqual(.{ 2e0, 0e0, 0e0, 2e0, -2e0, -2e0 }, ctx.getTransform());
 }
