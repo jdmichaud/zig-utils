@@ -62,6 +62,92 @@ pub const Fixed = struct {
   }
 };
 
+pub const MaxpTable = struct {
+  /// 0x00010000 (1.0) or 0x00005000 (0.5)
+  version: Fixed,
+  /// The number of glyphs in the font.
+  num_glyphs: u16,
+
+  // The following are only present if version is 1.0
+  max_points: u16 = 0,
+  max_contours: u16 = 0,
+  max_composite_points: u16 = 0,
+  max_composite_contours: u16 = 0,
+  max_zones: u16 = 0,
+  max_twilight_points: u16 = 0,
+  max_storage: u16 = 0,
+  max_function_defs: u16 = 0,
+  max_instruction_defs: u16 = 0,
+  max_stack_elements: u16 = 0,
+  max_size_of_instructions: u16 = 0,
+  max_component_elements: u16 = 0,
+  max_component_depth: u16 = 0,
+
+  const Self = @This();
+
+  pub fn pretty_print(self: Self) void {
+    const print = std.debug.print;
+    print("Maxp Table:\n", .{});
+    print("  version: {}\n", .{self.version});
+    print("  num_glyphs: {}\n", .{self.num_glyphs});
+
+    // Check if version is 1.0 (0x00010000)
+    if (self.version.raw == 0x00010000) {
+      print("  max_points: {}\n", .{self.max_points});
+      print("  max_contours: {}\n", .{self.max_contours});
+      print("  max_composite_points: {}\n", .{self.max_composite_points});
+      print("  max_composite_contours: {}\n", .{self.max_composite_contours});
+      print("  max_zones: {}\n", .{self.max_zones});
+      print("  max_twilight_points: {}\n", .{self.max_twilight_points});
+      print("  max_storage: {}\n", .{self.max_storage});
+      print("  max_function_defs: {}\n", .{self.max_function_defs});
+      print("  max_instruction_defs: {}\n", .{self.max_instruction_defs});
+      print("  max_stack_elements: {}\n", .{self.max_stack_elements});
+      print("  max_size_of_instructions: {}\n", .{self.max_size_of_instructions});
+      print("  max_component_elements: {}\n", .{self.max_component_elements});
+      print("  max_component_depth: {}\n", .{self.max_component_depth});
+    }
+  }
+
+  pub fn init(bytes: []const u8) !MaxpTable {
+    std.log.debug("bytes.len {}", .{ bytes.len });
+    // Minimum size for version 0.5 is 6 bytes
+    if (bytes.len < 6) return error.UnexpectedEndOfTable;
+
+    var off: usize = 0;
+    const version_val = readT(i32, bytes, &off);
+    const version = Fixed{ .raw = version_val };
+    const num_glyphs = readT(u16, bytes, &off);
+
+    // Basic struct with defaults
+    var table = MaxpTable{
+      .version = version,
+      .num_glyphs = num_glyphs,
+    };
+
+    // If version is 1.0 (0x00010000), parse the extra fields
+    if (version_val == 0x00010000) {
+      if (bytes.len < 32) return error.UnexpectedEndOfTable;
+
+      table.max_points = readT(u16, bytes, &off);
+      table.max_contours = readT(u16, bytes, &off);
+      table.max_composite_points = readT(u16, bytes, &off);
+      table.max_composite_contours = readT(u16, bytes, &off);
+      table.max_zones = readT(u16, bytes, &off);
+      table.max_twilight_points = readT(u16, bytes, &off);
+      table.max_storage = readT(u16, bytes, &off);
+      table.max_function_defs = readT(u16, bytes, &off);
+      table.max_instruction_defs = readT(u16, bytes, &off);
+      table.max_stack_elements = readT(u16, bytes, &off);
+      table.max_size_of_instructions = readT(u16, bytes, &off);
+      table.max_component_elements = readT(u16, bytes, &off);
+      table.max_component_depth = readT(u16, bytes, &off);
+    }
+
+    return table;
+  }
+};
+
 pub const HeadTable = struct {
   /// 16.16 fixed-point number
   /// Always 0x00010000 if (version 1.0)
@@ -175,6 +261,247 @@ pub const HeadTable = struct {
   }
 };
 
+pub const HheaTable = struct {
+  /// 16.16 fixed-point number
+  /// Major version number of the horizontal header table, set to 1.0 (0x00010000)
+  version: Fixed,
+
+  /// Typographic ascent (distance from baseline of highest ascender)
+  ascender: i16,
+  /// Typographic descent (distance from baseline of lowest descender)
+  descender: i16,
+  /// Typographic line gap. Negative LineGap values are treated as zero in some legacy platform implementations.
+  line_gap: i16,
+
+  /// Maximum advance width value in 'hmtx' table.
+  advance_width_max: u16,
+  /// Minimum Left Side Bearing value in 'hmtx' table.
+  min_left_side_bearing: i16,
+  /// Minimum Right Side Bearing value; calculated as (advanceWidth - lsb - (xMax - xMin)).
+  min_right_side_bearing: i16,
+  /// Max(lsb + (xMax - xMin)).
+  x_max_extent: i16,
+
+  /// Used to calculate the slope of the cursor (rise/run); 1 for vertical.
+  caret_slope_rise: i16,
+  /// 0 for vertical.
+  caret_slope_run: i16,
+  /// The amount by which a slanted highlight on a glyph needs to be shifted to produce the best appearance. Set to 0 for non-slanted fonts.
+  caret_offset: i16,
+
+  /// 0 for current format.
+  metric_data_format: i16,
+  /// Number of hMetric entries in 'hmtx' table
+  number_of_h_metrics: u16,
+
+  const Self = @This();
+
+  pub fn pretty_print(self: Self) void {
+    const print = std.debug.print;
+
+    print("Hhea Table:\n", .{});
+    print("  version {} \n", .{self.version});
+    print("  ascender {} \n", .{self.ascender});
+    print("  descender {} \n", .{self.descender});
+    print("  line_gap {} \n", .{self.line_gap});
+
+    print("  advance_width_max {} \n", .{self.advance_width_max});
+    print("  min_left_side_bearing {} \n", .{self.min_left_side_bearing});
+    print("  min_right_side_bearing {} \n", .{self.min_right_side_bearing});
+    print("  x_max_extent {} \n", .{self.x_max_extent});
+
+    print("  caret_slope_rise {} \n", .{self.caret_slope_rise});
+    print("  caret_slope_run {} \n", .{self.caret_slope_run});
+    print("  caret_offset {} \n", .{self.caret_offset});
+
+    print("  metric_data_format {} \n", .{self.metric_data_format});
+    print("  number_of_h_metrics {} \n", .{self.number_of_h_metrics});
+  }
+
+  // Size of the hhea table (36 bytes)
+  pub const byte_len: usize = 36;
+
+  /// Parse an `hhea` table from a big-endian byte slice
+  pub fn init(bytes: []const u8) !HheaTable {
+    if (bytes.len < byte_len) {
+        return error.UnexpectedEndOfTable;
+    }
+
+    var off: usize = 0;
+
+    const version = Fixed{ .raw = readT(i32, bytes, &off) };
+    const ascender = readT(i16, bytes, &off);
+    const descender = readT(i16, bytes, &off);
+    const line_gap = readT(i16, bytes, &off);
+
+    const advance_width_max = readT(u16, bytes, &off);
+    const min_left_side_bearing = readT(i16, bytes, &off);
+    const min_right_side_bearing = readT(i16, bytes, &off);
+    const x_max_extent = readT(i16, bytes, &off);
+
+    const caret_slope_rise = readT(i16, bytes, &off);
+    const caret_slope_run = readT(i16, bytes, &off);
+    const caret_offset = readT(i16, bytes, &off);
+
+    // Skip 4 reserved int16 fields (8 bytes total)
+    _ = readT(i16, bytes, &off);
+    _ = readT(i16, bytes, &off);
+    _ = readT(i16, bytes, &off);
+    _ = readT(i16, bytes, &off);
+
+    const metric_data_format = readT(i16, bytes, &off);
+    const number_of_h_metrics = readT(u16, bytes, &off);
+
+    return HheaTable{
+      .version = version,
+      .ascender = ascender,
+      .descender = descender,
+      .line_gap = line_gap,
+      .advance_width_max = advance_width_max,
+      .min_left_side_bearing = min_left_side_bearing,
+      .min_right_side_bearing = min_right_side_bearing,
+      .x_max_extent = x_max_extent,
+      .caret_slope_rise = caret_slope_rise,
+      .caret_slope_run = caret_slope_run,
+      .caret_offset = caret_offset,
+      .metric_data_format = metric_data_format,
+      .number_of_h_metrics = number_of_h_metrics,
+    };
+  }
+};
+
+// Origin (x=0)                                        Next Origin
+//       |                                          (Where the next char starts)
+//       v                                                   v
+//       |------------------ Advance Width ------------------|
+//       |                                                   |
+//       |   LSB    |        Glyph Bounding Box      |  RSB  |
+//       | <------> | <----------------------------> | <---> |
+//       |          |________________________________|       |
+//       |          |                                |       |
+//       |          |               /\               |       |
+//       |          |              /  \              |       |
+//       |          |             /    \             |       |
+//       |          |            /      \            |       |
+//       |          |           /________\           |       |
+//       |          |          /          \          |       |
+//       |          |         /            \         |       |
+//       |__________|________/______________\________|_______|
+//                  ^
+//                  xMin (from 'head' or glyph data)
+// This pseudo code demonstrate how characters are spaced relative to each other
+// ```
+// pen_x = 0
+//
+// for each glyph:
+//     draw glyph at:
+//         x = pen_x + leftSideBearing
+//     pen_x += advanceWidth
+//     pen_x += kerning(previous_glyph, current_glyph)
+// ```
+// `advanceWidth` and `leftSideBearing` is to be found in `hmtx` table
+// `kerning` is to be found in `kern` or `GPOS` table
+// `hhea` table provides information on how to parse the `hmtx` table
+pub const LongHorMetric = struct {
+  /// The amount of displacement in X after a character
+  advance_width: u16,
+  /// left side bearing is the distance from the left bound to the left most contour
+  lsb: i16,
+};
+
+pub const HmtxTable = struct {
+  number_of_h_metrics: u16,
+  num_glyphs: u16,
+
+  /// Slice containing the hMetrics array (numberOfHMetrics * 4 bytes)
+  h_metrics_data: []const u8,
+  /// Slice containing the leftSideBearing array (remaining glyphs * 2 bytes)
+  lsb_data: []const u8,
+
+  const Self = @This();
+
+  pub fn pretty_print(self: Self) void {
+    const print = std.debug.print;
+    print("Hmtx Table:\n", .{});
+    print("  number_of_h_metrics {} \n", .{self.number_of_h_metrics});
+    print("  num_glyphs {} \n", .{self.num_glyphs});
+    print("  data size: {} bytes\n", .{self.h_metrics_data.len + self.lsb_data.len});
+  }
+
+  /// Parse an `hmtx` table.
+  /// Note: This table requires `number_of_h_metrics` from the `hhea` table
+  /// and `num_glyphs` from the `maxp` table to be parsed correctly.
+  pub fn init(bytes: []const u8, number_of_h_metrics: u16, num_glyphs: u16) !HmtxTable {
+    // Validation: number_of_h_metrics should not exceed num_glyphs
+    if (number_of_h_metrics > num_glyphs) {
+      // While technically the spec says this shouldn't happen, some fonts might be malformed.
+      // A robust parser might clamp this or error. Here we return error.
+      return error.InvalidHmtxCounts;
+    }
+
+    var off: usize = 0;
+
+    // 1. hMetrics array: numberOfHMetrics * 4 bytes
+    // Each entry is { advanceWidth: u16, lsb: i16 }
+    const h_metrics_len = @as(usize, number_of_h_metrics) * 4;
+    if (off + h_metrics_len > bytes.len) return error.UnexpectedEndOfTable;
+
+    const h_metrics_slice = bytes[off .. off + h_metrics_len];
+    off += h_metrics_len;
+
+    // 2. leftSideBearing array: (numGlyphs - numberOfHMetrics) * 2 bytes
+    // Each entry is { lsb: i16 }
+    // The advanceWidth for these glyphs is the same as the last entry in hMetrics.
+    const num_lsbs = num_glyphs - number_of_h_metrics;
+    const lsb_len = @as(usize, num_lsbs) * 2;
+    if (off + lsb_len > bytes.len) return error.UnexpectedEndOfTable;
+
+    const lsb_slice = bytes[off .. off + lsb_len];
+
+    return HmtxTable{
+      .number_of_h_metrics = number_of_h_metrics,
+      .num_glyphs = num_glyphs,
+      .h_metrics_data = h_metrics_slice,
+      .lsb_data = lsb_slice,
+    };
+  }
+
+  /// Retrieve the horizontal metrics for a specific glyph index.
+  pub fn getMetric(self: Self, glyph_index: u16) !LongHorMetric {
+    if (glyph_index >= self.num_glyphs) {
+      return error.GlyphIndexOutOfBounds;
+    }
+
+    if (glyph_index < self.number_of_h_metrics) {
+      // Case 1: Glyph is inside the hMetrics array.
+      // We read both advance_width and lsb from the first array.
+      var off = @as(usize, glyph_index) * 4;
+      return LongHorMetric{
+        .advance_width = readT(u16, self.h_metrics_data, &off),
+        .lsb = readT(i16, self.h_metrics_data, &off),
+      };
+    } else {
+      // Case 2: Glyph is inside the leftSideBearing array (monospaced remainder).
+      // Its advance_width is the same as the LAST entry in the hMetrics array.
+
+      // Get last width
+      const last_metric_idx = self.number_of_h_metrics - 1;
+      var width_off = @as(usize, last_metric_idx) * 4;
+      const common_width = readT(u16, self.h_metrics_data, &width_off);
+
+      // Get specific LSB
+      const lsb_index = glyph_index - self.number_of_h_metrics;
+      var lsb_off = @as(usize, lsb_index) * 2;
+      const lsb = readT(i16, self.lsb_data, &lsb_off);
+
+      return LongHorMetric{
+        .advance_width = common_width,
+        .lsb = lsb,
+      };
+    }
+  }
+};
+
 // cmap maps character codes (e.g. Unicode) to glyph IDs (GIDs). The GID indexes
 // into the `offsets` field used by loca. loca stores offsets (or indices) into
 // the glyf table relative to the beginning of the glyf table for each GID. Each
@@ -253,7 +580,7 @@ const CmapFormat4 = struct {
     };
   }
 
-  pub fn get(self: CmapFormat4, cp: u32) u32 {
+  pub fn get(self: CmapFormat4, cp: u32) u16 {
     if (cp > 65535) return 0;
     const cp_u16 = @as(u16, @truncate(cp));
 
@@ -328,7 +655,7 @@ const CmapFormat12 = struct {
     };
   }
 
-  pub fn get(self: CmapFormat12, cp: u32) u32 {
+  pub fn get(self: CmapFormat12, cp: u32) u16 {
     // Binary search is ideal here, but linear for clarity:
     var i: u32 = 0;
     var offset: usize = 0;
@@ -338,7 +665,10 @@ const CmapFormat12 = struct {
 
       if (cp >= start and cp <= end) {
         const start_id = std.mem.readInt(u32, self.groups_data[offset + 8..][0..4], .big);
-        return start_id + (cp - start);
+        // Although format 12 stored 32 bits, glyph index is a 16 bits. The maxp
+        // table `num_glpyh` is a u16. That is why TTF font do not support more
+        // than 65K characters.
+        return @intCast(start_id + (cp - start));
       }
       offset += 12;
     }
@@ -380,7 +710,7 @@ pub const CmapMapper = union(enum) {
   }
 
   /// The single unified call point
-  pub fn getGlyph(self: CmapMapper, code_point: u32) !u32 {
+  pub fn getGlyph(self: CmapMapper, code_point: u32) !u16 {
     switch (self) {
       .fmt4 => |impl| return impl.get(code_point),
       .fmt12 => |impl| return impl.get(code_point),
@@ -856,9 +1186,12 @@ pub const TtfFont = struct {
   offset_table: OffsetTable,
   table_records: []TableRecord,
 
+  maxp_table: MaxpTable,
   head_table: HeadTable,
+  hhea_table: HheaTable,
   cmap_table: CmapTable,
   loca_table: LocaTable,
+  hmtx_table: HmtxTable,
   glyf_table: GlyphTable,
 
   pub fn load(allocator: std.mem.Allocator, ttfcontent: []const u8) !TtfFont {
@@ -870,12 +1203,19 @@ pub const TtfFont = struct {
       tr.* = TableRecord.fromBytes(ttfcontent, &offset);
     }
 
+    const mr = getTableRecords(table_records, "maxp") orelse return error.NoMaxpTable;
+    const maxp_table = try MaxpTable.init(ttfcontent[mr.offset..mr.offset + mr.length]);
     const hr = getTableRecords(table_records, "head") orelse return error.NoHeadTable;
     const head_table = try HeadTable.init(ttfcontent[hr.offset..hr.offset + hr.length]);
+    const her = getTableRecords(table_records, "hhea") orelse return error.NoHeeaTable;
+    const hhea_table = try HheaTable.init(ttfcontent[her.offset..her.offset + her.length]);
     const cr = getTableRecords(table_records, "cmap") orelse return error.NoCmapTable;
     const cmap_table = try CmapTable.init(allocator, ttfcontent[cr.offset..cr.offset + cr.length]);
     const lr = getTableRecords(table_records, "loca") orelse return error.NoLocaTable;
     const loca_table = try LocaTable.init(head_table.index_to_loc_format, ttfcontent[lr.offset..lr.offset + lr.length]);
+    const hmtxr = getTableRecords(table_records, "hmtx") orelse return error.NoGlyphTable;
+    const hmtx_table = try HmtxTable.init(ttfcontent[hmtxr.offset..hmtxr.offset + hmtxr.length],
+      hhea_table.number_of_h_metrics, maxp_table.num_glyphs);
     const gr = getTableRecords(table_records, "glyf") orelse return error.NoGlyphTable;
     const glyf_table = GlyphTable.init(ttfcontent[gr.offset..gr.offset + gr.length]);
 
@@ -883,9 +1223,12 @@ pub const TtfFont = struct {
       .ttfcontent = ttfcontent,
       .offset_table = offset_table,
       .table_records = table_records,
+      .maxp_table = maxp_table,
       .head_table = head_table,
+      .hhea_table = hhea_table,
       .cmap_table = cmap_table,
       .loca_table = loca_table,
+      .hmtx_table = hmtx_table,
       .glyf_table = glyf_table,
     };
   }
@@ -907,5 +1250,10 @@ pub const TtfFont = struct {
 
   pub fn getGlyph(self: Self, allocator: std.mem.Allocator, code_point: u32) !Glyph {
     return self.glyf_table.getGlyph(allocator, code_point, self.cmap_table.sub_tables[0], self.loca_table);
+  }
+
+  pub fn getGlyphMetric(self: Self, code_point: u32) !LongHorMetric {
+    const glyph_index = try self.cmap_table.sub_tables[0].mapper.getGlyph(code_point);
+    return self.hmtx_table.getMetric(glyph_index);
   }
 };

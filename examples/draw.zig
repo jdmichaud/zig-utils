@@ -368,6 +368,7 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
         std.log.debug("{s} 0x{x:0>8} {}", .{ tr.tag, tr.offset, tr.length });
     }
 
+    ttf_font.maxp_table.pretty_print();
     ttf_font.head_table.pretty_print();
     ttf_font.cmap_table.pretty_print();
     std.log.debug("{} glyphs", .{ ttf_font.loca_table.count() });
@@ -399,23 +400,6 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
     var mouse_position: [2]i32 = .{ 0, 0 };
     var mouse_buttons: u3 = 0;
 
-    var t_glyph = try ttf_font.getGlyph(allocator, 'S');
-    defer t_glyph.deinit(allocator);
-    const t_height = ttf_font.head_table.y_max - ttf_font.head_table.y_min;
-    const t_ratio = misc.asf32(canvas_height) / misc.asf32(t_height);
-
-    // ```
-    // pen_x = 0
-    //
-    // for each glyph:
-    //     draw glyph at:
-    //         x = pen_x + leftSideBearing
-    //     pen_x += advanceWidth
-    //     pen_x += kerning(previous_glyph, current_glyph)
-    // ```
-    // `advanceWidth` and `leftSideBearing` is to be found in `hmtx` table
-    // `kerning` is to be found in `kern` or `GPOS` table
-    // `hhea` table provides information on how to parse the `htmx` table
     while (!quit) {
         misc.x11checkerboard(canvas_width, canvas_height, context.buffer);
         context.setTransform(1, 0, 0, 1, 0, 0);
@@ -428,54 +412,66 @@ fn runPrintExample(allocator: std.mem.Allocator, ttf_path: []const u8, text: []c
 
         context.strokeStyle = 0xFFBBBBBB;
         context.fillStyle = 0xFF0000FF;
-        var contours = t_glyph.contours();
-        while (contours.next()) |points| {
-            var first = true;
-            context.beginPath();
-            for (points) |point| {
-                const point_x = misc.asInt(i16, misc.asf32(point.x) * t_ratio);
-                const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
-                if (point.on_curve) {
-                    if (first) {
-                        first = false;
-                        context.moveTo(point_x, point_y);
+
+        var penx: i32 = 0;
+        for (text) |c| {
+            var glyph = try ttf_font.getGlyph(allocator, c);
+            const metric = try ttf_font.getGlyphMetric(c);
+            defer glyph.deinit(allocator);
+            const t_height = ttf_font.head_table.y_max - ttf_font.head_table.y_min;
+            const t_ratio = misc.asf32(canvas_height) / misc.asf32(t_height) * 0.5;
+
+            const left_bound = penx; // + metric.lsb;
+            var contours = glyph.contours();
+            while (contours.next()) |points| {
+                var first = true;
+                context.beginPath();
+                for (points) |point| {
+                    const point_x = misc.asInt(i16, misc.asf32(point.x + left_bound) * t_ratio);
+                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
+                    if (point.on_curve) {
+                        if (first) {
+                            first = false;
+                            context.moveTo(point_x, point_y);
+                        } else {
+                            context.lineTo(point_x, point_y);
+                        }
                     } else {
-                        context.lineTo(point_x, point_y);
+                        context.fillCircle(point_x, point_y, 3);
                     }
-                } else {
-                    context.fillCircle(point_x, point_y, 3);
+                }
+                context.closePath();
+                context.stroke();
+            }
+
+            var curves = glyph.curves();
+            context.strokeStyle = 0xFFFF0000;
+            context.beginPath();
+            while (curves.next()) |segment| {
+                switch (segment) {
+                    .move_to => |point| {
+                        const point_x = misc.asInt(i16, misc.asf32(point.x + left_bound) * t_ratio);
+                        const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
+                        context.moveTo(point_x, point_y);
+                    },
+                    .line_to => |point| {
+                        const point_x = misc.asInt(i16, misc.asf32(point.x + left_bound) * t_ratio);
+                        const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
+                        context.lineTo(point_x, point_y);
+                    },
+                    .quad_to => |parameters| {
+                        const point_x = misc.asInt(i16, misc.asf32(parameters.x + left_bound) * t_ratio);
+                        const point_y = misc.asInt(i16, canvas_height - misc.asf32(parameters.y) * t_ratio);
+                        const control_point_x = misc.asInt(i16, misc.asf32(parameters.cx + left_bound) * t_ratio);
+                        const control_point_y = misc.asInt(i16, canvas_height - misc.asf32(parameters.cy) * t_ratio);
+                        context.quadraticCurveTo(control_point_x, control_point_y, point_x, point_y);
+                    },
                 }
             }
             context.closePath();
             context.stroke();
+            penx += metric.advance_width;
         }
-
-        var curves = t_glyph.curves();
-        context.strokeStyle = 0xFFFF0000;
-        context.beginPath();
-        while (curves.next()) |segment| {
-            switch (segment) {
-                .move_to => |point| {
-                    const point_x = misc.asInt(i16, misc.asf32(point.x) * t_ratio);
-                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
-                    context.moveTo(point_x, point_y);
-                },
-                .line_to => |point| {
-                    const point_x = misc.asInt(i16, misc.asf32(point.x) * t_ratio);
-                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(point.y) * t_ratio);
-                    context.lineTo(point_x, point_y);
-                },
-                .quad_to => |parameters| {
-                    const point_x = misc.asInt(i16, misc.asf32(parameters.x) * t_ratio);
-                    const point_y = misc.asInt(i16, canvas_height - misc.asf32(parameters.y) * t_ratio);
-                    const control_point_x = misc.asInt(i16, misc.asf32(parameters.cx) * t_ratio);
-                    const control_point_y = misc.asInt(i16, canvas_height - misc.asf32(parameters.cy) * t_ratio);
-                    context.quadraticCurveTo(control_point_x, control_point_y, point_x, point_y);
-                },
-            }
-        }
-        context.closePath();
-        context.stroke();
 
         while (adapter.interface.getEvent()) |event| {
             switch (event) {

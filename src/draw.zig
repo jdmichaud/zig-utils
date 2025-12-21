@@ -407,7 +407,7 @@ pub const DrawContext = struct {
           const control_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.cpx, parameters.cpy }));
           const end_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.x, parameters.y }));
           var current_position = start_point;
-          const step = 50;
+          const step = 10;
           for (0..step) |t_int| {
             const t: f32 = asf32(t_int) / (step - 1);
             const first_segment = lerp(
