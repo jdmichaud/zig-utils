@@ -199,7 +199,7 @@ pub const DrawContext = struct {
   pub fn fillRect(self: Self, x: i16, y: i16, width: i16, height: i16) void {
     const xc, const yc = self.transformPoint(asf32(x), asf32(y));
     const widthc, const heightc = self.transformVector(asf32(width), asf32(height));
-    self.fillPolygon(&.{
+    self.fillPolygon(self.allocator, &.{
       [2]f32{ xc, yc },
       [2]f32{ xc + widthc, yc },
       [2]f32{ xc + widthc, yc + heightc },
@@ -397,12 +397,6 @@ pub const DrawContext = struct {
           pen[1] = position[1];
         },
         PathCommand.quad_to => |parameters| {
-          const lerp = struct {
-            pub fn lerp(start: @Vector(2, f32), end: @Vector(2, f32), t: f32) @Vector(2, f32) {
-              return start + (end - start) * @as(@Vector(2, f32), @splat(t));
-            }
-          }.lerp;
-
           const start_point: @Vector(2, f32) = @floatFromInt(@as(@Vector(2, i16), pen));
           const control_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.cpx, parameters.cpy }));
           const end_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.x, parameters.y }));
@@ -440,7 +434,7 @@ pub const DrawContext = struct {
     var pen: [2]i16 = .{ 0, 0 };
     var first_point: [2]i16 = .{ 0, 0 };
     var vertices = std.ArrayList([2]f32).init(self.allocator);
-    for (self.path_command_stack.items  ) |command| {
+    for (self.path_command_stack.items) |command| {
       switch (command) {
         PathCommand.move_to => |position| {
           pen[0] = position[0];
@@ -459,8 +453,26 @@ pub const DrawContext = struct {
             @floatFromInt(pen[1]))) catch {};
         },
         PathCommand.quad_to => |parameters| {
-          _ = parameters;
-          @panic("unimplemented");
+          const start_point: @Vector(2, f32) = @floatFromInt(@as(@Vector(2, i16), pen));
+          const control_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.cpx, parameters.cpy }));
+          const end_point = @as(@Vector(2, f32), @floatFromInt(@Vector(2, i16){ parameters.x, parameters.y }));
+          vertices.append(self.transformPoint(start_point[0], start_point[1])) catch {};
+          const step = 10;
+          for (0..step) |t_int| {
+            const t: f32 = asf32(t_int) / (step - 1);
+            const first_segment = lerp(
+              start_point,
+              control_point,
+              t);
+            const second_segment = lerp(
+              control_point,
+              end_point,
+              t);
+            const curve = lerp(first_segment, second_segment, t);
+            vertices.append(self.transformPoint(curve[0], curve[1])) catch {};
+          }
+          pen[0] = parameters.x;
+          pen[1] = parameters.y;
         },
         PathCommand.close_path => {
           pen[0] = first_point[0];
@@ -468,13 +480,13 @@ pub const DrawContext = struct {
           vertices.append(self.transformPoint(
             @floatFromInt(pen[0]),
             @floatFromInt(pen[1]))) catch {};
-          self.fillPolygon(vertices.items, self.fillStyle);
+          self.fillPolygon(self.allocator, vertices.items, self.fillStyle);
           vertices.clearRetainingCapacity();
         },
       }
     }
     if (vertices.items.len > 0) {
-      self.fillPolygon(vertices.items, self.fillStyle);
+      self.fillPolygon(self.allocator, vertices.items, self.fillStyle);
     }
     vertices.deinit();
     self.path_command_stack.clearRetainingCapacity();
@@ -1076,7 +1088,7 @@ pub const DrawContext = struct {
   }
 
   /// Fills a polygon defined by `vertices` using the scan-line algorithm.
-  fn fillPolygon(self: Self, vertices: []const [2]f32, afillStyle: u32) void {
+  fn fillPolygon(self: Self, allocator: std.mem.Allocator, vertices: []const [2]f32, afillStyle: u32) void {
     const Fns = struct {
       /// Represents a single edge of the polygon, prepared for the scan-line algorithm.
       /// This version stores 'slope' (dy/dx) to match the original Python code.
@@ -1098,7 +1110,7 @@ pub const DrawContext = struct {
       }
 
       /// Define a function to initialize all edges of the polygon.
-      fn initializeEdges(vrtces: []const [2]f32, edges: *std.ArrayListUnmanaged(Edge)) void {
+      fn initializeEdges(vrtces: []const [2]f32, edges: *std.ArrayList(Edge)) void {
         for (vrtces, 0..) |p1, i| {
           const p2 = vrtces[(i + 1) % vrtces.len];
 
@@ -1111,18 +1123,18 @@ pub const DrawContext = struct {
           const x_at_min_y = if (p1[1] <= p2[1]) p1[0] else p2[0];
           const invslope = calculateInvSlope(p1[0], p1[1], p2[0], p2[1]);
 
-          edges.appendAssumeCapacity(Edge{
+          edges.append(Edge{
             .min_y = min_y,
             .max_y = max_y,
             .x_at_min_y = x_at_min_y,
             .invslope = invslope,
-          });
+          }) catch @panic("OOM");
         }
       }
 
       /// Define a function to initialize the global edge table.
-      fn initializeGlobalEdgeTable(edges: []const Edge, global_edge_table: *std.ArrayListUnmanaged(Edge)) void {
-        global_edge_table.appendSliceAssumeCapacity(edges);
+      fn initializeGlobalEdgeTable(edges: []const Edge, global_edge_table: *std.ArrayList(Edge)) void {
+        global_edge_table.appendSlice(edges) catch @panic("OOM");
 
         // Sort by min_y, then x_at_min_y
         const sort_context = struct {
@@ -1153,12 +1165,12 @@ pub const DrawContext = struct {
       fn getActiveEdgeTable(
         source_table: []const Edge,
         scan_line: i32,
-        active_edge_table: *std.ArrayListUnmanaged(Edge),
+        active_edge_table: *std.ArrayList(Edge),
       ) void {
         active_edge_table.clearRetainingCapacity();
         for (source_table) |edge| {
           if (edge.min_y <= scan_line and edge.max_y > scan_line) {
-            active_edge_table.appendAssumeCapacity(edge);
+            active_edge_table.append(edge) catch @panic("OOM");
           }
         }
 
@@ -1177,19 +1189,20 @@ pub const DrawContext = struct {
 
     if (vertices.len < 3) return;
 
-    var edge_buffer: [64]Fns.Edge = undefined; // Preallocate a buffer for edges.
-    var edge_list = std.ArrayListUnmanaged(Fns.Edge).initBuffer(&edge_buffer);
+    var edge_list = std.ArrayList(Fns.Edge).init(allocator);
+    defer edge_list.deinit();
     Fns.initializeEdges(vertices, &edge_list);
 
-    var global_edge_buffer: [64]Fns.Edge = undefined; // Preallocate a buffer for edges.
-    var global_edge_table = std.ArrayListUnmanaged(Fns.Edge).initBuffer(&global_edge_buffer);
+    var global_edge_table = std.ArrayList(Fns.Edge).init(allocator);
+    defer global_edge_table.deinit();
     Fns.initializeGlobalEdgeTable(edge_list.items, &global_edge_table);
 
     if (global_edge_table.items.len == 0) return;
 
     // Initialize scan-line and active edge table.
     var scan_line: i16 = global_edge_table.items[0].min_y;
-    var active_edge_table = std.ArrayListUnmanaged(Fns.Edge).initBuffer(&edge_buffer);
+    var active_edge_table = std.ArrayList(Fns.Edge).init(allocator);
+    defer active_edge_table.deinit();
     Fns.getActiveEdgeTable(global_edge_table.items, scan_line, &active_edge_table);
 
     // Iterate over each scan-line until active edge table is empty.
@@ -1542,6 +1555,10 @@ pub const DrawContext = struct {
       }
     }
   }
+
+  pub fn lerp(start: @Vector(2, f32), end: @Vector(2, f32), t: f32) @Vector(2, f32) {
+    return start + (end - start) * @as(@Vector(2, f32), @splat(t));
+  }
 };
 
 fn printBuffer(ctx: DrawContext) !void {
@@ -1564,7 +1581,7 @@ test "fillPolygon" {
   var vertices = [_][2]f32{ [2]f32{ 1.0, 1.0 }, [2]f32{ 3.0, 1.0 }, [2]f32{ 3.0, 3.0 }, [2]f32{ 1.0, 3.0 } };
   var ctx = try DrawContext.init(allocator, 5, 5);
   defer ctx.deinit(allocator);
-  ctx.fillPolygon(&vertices, 1);
+  ctx.fillPolygon(allocator, &vertices, 1);
   // try printBuffer(ctx);
   // FIXME: We shouldn't paint the edge of the polygon
   try std.testing.expectEqualSlices(u32, &.{
