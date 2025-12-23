@@ -1207,11 +1207,13 @@ pub const DrawContext = struct {
 
     // Iterate over each scan-line until active edge table is empty.
     while (active_edge_table.items.len > 0) {
+      std.log.debug("scanline {}", .{ active_edge_table.items.len });
       // Draw pixels between x-values of odd and even parity edge pairs.
       var i: usize = 0;
       while (i + 1 < active_edge_table.items.len) : (i += 2) {
         const even_edge = active_edge_table.items[i];
         const odd_edge = active_edge_table.items[i + 1];
+        std.log.debug("even_edge {}, odd_edge {}", .{ even_edge, odd_edge });
 
         const x_start_f = asf32(scan_line - even_edge.min_y) * even_edge.invslope + even_edge.x_at_min_y;
         const x_end_f = asf32(scan_line - odd_edge.min_y) * odd_edge.invslope + odd_edge.x_at_min_y;
@@ -1219,6 +1221,7 @@ pub const DrawContext = struct {
         var x_start = @round(x_start_f);
         const x_end = @round(x_end_f);
 
+        std.log.debug("x_start {} x_end {}", .{ x_start, x_end });
         while (x_start < x_end) {
           self.internalPlot(@intFromFloat(x_start), scan_line, afillStyle);
           x_start += 1;
@@ -1577,25 +1580,45 @@ fn printBuffer(ctx: DrawContext) !void {
 test "fillPolygon" {
   std.testing.log_level = .debug;
   const allocator = std.testing.allocator;
-
-  var vertices = [_][2]f32{ [2]f32{ 1.0, 1.0 }, [2]f32{ 3.0, 1.0 }, [2]f32{ 3.0, 3.0 }, [2]f32{ 1.0, 3.0 } };
-  var ctx = try DrawContext.init(allocator, 5, 5);
-  defer ctx.deinit(allocator);
-  ctx.fillPolygon(allocator, &vertices, 1);
-  // try printBuffer(ctx);
-  // FIXME: We shouldn't paint the edge of the polygon
-  try std.testing.expectEqualSlices(u32, &.{
-    // 0, 0, 0, 0, 0,
-    // 0, 0, 0, 0, 0,
-    // 0, 0, 1, 0, 0,
-    // 0, 0, 0, 0, 0,
-    // 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0,
-    0, 1, 1, 0, 0,
-    0, 1, 1, 0, 0,
-    0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0,
-  }, ctx.buffer);
+  // {
+  //   var vertices = [_][2]f32{ [2]f32{ 1.0, 1.0 }, [2]f32{ 3.0, 1.0 }, [2]f32{ 3.0, 3.0 }, [2]f32{ 1.0, 3.0 } };
+  //   var ctx = try DrawContext.init(allocator, 5, 5);
+  //   defer ctx.deinit(allocator);
+  //   ctx.fillPolygon(allocator, &vertices, 1);
+  //   // try printBuffer(ctx);
+  //   // FIXME: We shouldn't paint the edge of the polygon
+  //   try std.testing.expectEqualSlices(u32, &.{
+  //     // 0, 0, 0, 0, 0,
+  //     // 0, 0, 0, 0, 0,
+  //     // 0, 0, 1, 0, 0,
+  //     // 0, 0, 0, 0, 0,
+  //     // 0, 0, 0, 0, 0,
+  //     0, 0, 0, 0, 0,
+  //     0, 1, 1, 0, 0,
+  //     0, 1, 1, 0, 0,
+  //     0, 0, 0, 0, 0,
+  //     0, 0, 0, 0, 0,
+  //   }, ctx.buffer);
+  // }
+  {
+    var vertices = [_][2]f32{ .{ 4, 0 }, .{ 1, 3 }, .{ 3, 3 }, .{ 3, 2 } };
+    var ctx = try DrawContext.init(allocator, 5, 5);
+    defer ctx.deinit(allocator);
+    ctx.fillPolygon(allocator, &vertices, 1);
+    try printBuffer(ctx);
+    try std.testing.expectEqualSlices(u32, &.{
+      // 0, 0, 0, 0, 0,
+      // 0, 0, 0, 0, 0,
+      // 0, 0, 1, 0, 0,
+      // 0, 0, 0, 0, 0,
+      // 0, 0, 0, 0, 0,
+      0, 0, 0, 1, 0,
+      0, 0, 0, 1, 0,
+      0, 0, 1, 1, 0,
+      0, 1, 1, 1, 0,
+      0, 0, 0, 0, 0,
+    }, ctx.buffer);
+  }
 }
 
 test "fillCircle" {

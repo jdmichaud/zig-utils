@@ -811,19 +811,32 @@ fn runPolygonExample(allocator: std.mem.Allocator, action_type: enum { stroke, f
             try dots.append(.{ .x = x, .y = y, .speedx = speedx, .speedy = speedy });
         }
 
-        // If a dot went out of the screen, just remove it and start the loop again
-        vertices.clearRetainingCapacity();
-        for (dots.items, 0..) |*dot, doti| {
-            const newx = dot.x + dot.speedx;
-            const newy = dot.y + dot.speedy;
-            if (newx < 0 or newx >= width or newy < 0 or newy >= height) {
-                _ = dots.swapRemove(doti);
-                break;
-            }
-            dot.x = newx;
-            dot.y = newy;
-            try vertices.append(.{ newx, newy });
-        }
+        // // If a dot went out of the screen, just remove it and start the loop again
+        // vertices.clearRetainingCapacity();
+        // std.log.debug("----", .{ });
+        // for (dots.items, 0..) |*dot, doti| {
+        //     const newx = dot.x + dot.speedx;
+        //     const newy = dot.y + dot.speedy;
+        //     if (newx < 0 or newx >= width or newy < 0 or newy >= height) {
+        //         _ = dots.swapRemove(doti);
+        //         break;
+        //     }
+        //     dot.x = newx;
+        //     dot.y = newy;
+        //     std.log.debug("{d} {d}", .{ newx, newy });
+        //     try vertices.append(.{ newx, newy });
+        // }
+
+        // try vertices.append(.{ 453.65323, 45.756447 });
+        // try vertices.append(.{ 135.27386, 366.7728 });
+        // try vertices.append(.{ 282.59277, 259.66742 });
+        // try vertices.append(.{ 295.758, 217.83728 });
+
+        try vertices.append(.{ 4, 0 });
+        try vertices.append(.{ 1, 3 });
+        try vertices.append(.{ 3, 3 });
+        try vertices.append(.{ 3, 2 });
+
 
         geometry.make_polygon(vertices.items);
 
