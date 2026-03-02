@@ -22,7 +22,7 @@ pub fn load(pathname: []const u8) ![]align(4096) const u8 {
 }
 
 
-const Ptype = enum {
+pub const Ptype = enum {
   P1, P2, P3, P4, P5, P6,
 };
 
