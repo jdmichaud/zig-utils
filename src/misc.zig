@@ -27,10 +27,6 @@ pub const Ptype = enum {
 };
 
 pub fn writePgm(comptime P: Ptype, width: usize, height: usize, pixels: []const u8, filepath: []const u8) !void {
-  if (width * height != pixels.len) {
-    return error.IncorrectSize;
-  }
-
   // Create file
   const file = try std.fs.cwd().createFile(
     filepath,
@@ -40,6 +36,10 @@ pub fn writePgm(comptime P: Ptype, width: usize, height: usize, pixels: []const 
 
   switch (P) {
     .P1 => {
+      if (width * height != pixels.len) {
+        return error.IncorrectSize;
+      }
+
       // Prepare PGM header (https://en.wikipedia.org/wiki/Netpbm)
       var buffer: [255]u8 = [_]u8{ 0 } ** 255;
       const pgmHeader = try std.fmt.bufPrint(&buffer, "P1\n{} {}\n", .{ width, height });
@@ -62,8 +62,8 @@ pub fn writePgm(comptime P: Ptype, width: usize, height: usize, pixels: []const 
       const pgmHeader = try std.fmt.bufPrint(&buffer, "P6\n{} {}\n255\n", .{ width, height });
       // Write to file
       try file.writeAll(pgmHeader);
-      const stdout = std.io.getStdOut().writer();
-      for (pixels) |p| { try stdout.print("{} ", .{ p }); }
+      // const stdout = std.io.getStdOut().writer();
+      // for (pixels) |p| { try stdout.print("{} ", .{ p }); }
       try file.writeAll(pixels);
     },
     else => return error.NotImplemented,
