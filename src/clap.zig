@@ -164,8 +164,20 @@ pub const Args = struct {
     return self.switchMap.get(name) orelse false;
   }
 
-  pub fn getOption(self: Self, comptime T: type, name: []const u8) ?T {
-    return self.optionMap.get(name);
+  pub fn getOption(self: Self, comptime T: type, name: []const u8) !?T {
+    switch (T) {
+      []const u8 => return self.optionMap.get(name),
+      u8, i8, u16, i16, u32, i32, i64, u64 => {
+        if (self.optionMap.get(name)) |value| {
+          return try std.fmt.parseInt(T, value, 10);
+        }
+        return null;
+      },
+      else => @compileError(std.fmt.comptimePrint(
+          "getOption: unhandled type {}",
+          .{ T },
+      )),
+    }
   }
 };
 
