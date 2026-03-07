@@ -83,6 +83,24 @@ pub const DrawContext = struct {
     self.path_command_stack.deinit();
   }
 
+  pub fn fromBuffer(allocator: std.mem.Allocator, buffer: []u32, width: u32, height: u32) !Self {
+    @memset(buffer, 0);
+
+    return Self{
+      .width = width,
+      .height = height,
+      .buffer = buffer,
+      .path_command_stack = std.ArrayList(PathCommand).init(allocator),
+      .allocator = allocator,
+    };
+  }
+
+  // Deinit a DrawContext that was allocated with fromBuffer
+  pub fn deinitFromBuffer(self: *Self, allocator: std.mem.Allocator) void {
+    _ = allocator;
+    self.path_command_stack.deinit();
+  }
+
   // resets (overrides) the current transformation to the identity matrix, and
   // then invokes a transformation described by the arguments of this method.
   // This lets you scale, rotate, translate (move), and skew the context.
