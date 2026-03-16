@@ -342,6 +342,8 @@ pub const EventType = enum {
   MouseWheel,
   KeyDown,
   KeyUp,
+  WindowEnter,
+  WindowExit,
 };
 
 pub const InputEvent = union(EventType) {
@@ -352,6 +354,13 @@ pub const InputEvent = union(EventType) {
   MouseWheel: MouseWheel,
   KeyDown: KeyEvent,
   KeyUp: KeyEvent,
+  WindowEnter: void,
+  WindowExit: void,
+};
+
+const CursorState = enum {
+  show,
+  hide,
 };
 
 pub const IOAdapter = struct {
@@ -359,6 +368,7 @@ pub const IOAdapter = struct {
   drawImageFn: *const fn (*IOAdapter, []const u32, u16, u16, u16, u16) void,
   renderSceneFn: *const fn (*IOAdapter) void,
   waitEventFn: *const fn (*IOAdapter) InputEvent,
+  setCursorFn: *const fn(*IOAdapter, CursorState) void,
 
   // Check if an event has been raised and return it.
   // If not, return null.
@@ -376,6 +386,10 @@ pub const IOAdapter = struct {
 
   pub fn waitEvent(adapter: *IOAdapter) InputEvent {
     return adapter.waitEventFn(adapter);
+  }
+
+  pub fn setCursor(adapter: *IOAdapter, cursorState: CursorState) void {
+    return adapter.setCursorFn(adapter, cursorState);
   }
 };
 
@@ -430,6 +444,7 @@ pub const SDLAdapter = struct {
         .drawImageFn = drawImage,
         .renderSceneFn = renderScene,
         .waitEventFn = waitEvent,
+        .setCursorFn = setCursor,
       },
     };
   }
@@ -491,6 +506,13 @@ pub const SDLAdapter = struct {
       },
       sdl.SDL_MOUSEWHEEL => {
         return InputEvent{ .MouseWheel = MouseWheel{ .y = event.wheel.y } };
+      },
+      sdl.SDL_WINDOWEVENT => {
+        switch (event.window.event) {
+          sdl.SDL_WINDOWEVENT_ENTER => return InputEvent{ .WindowEnter = {} },
+          sdl.SDL_WINDOWEVENT_LEAVE => return InputEvent{ .WindowExit = {} },
+          else => {},
+        }
       },
       else => {},
     }
@@ -579,5 +601,13 @@ pub const SDLAdapter = struct {
       // },
       else => continue :loop sdl.SDL_WaitEvent(&event),
     }
+  }
+
+  pub fn setCursor(adapter: *IOAdapter, cursorState: CursorState) void {
+    _ = adapter;
+    _ = switch (cursorState) {
+      .show => sdl.SDL_ShowCursor(sdl.SDL_ENABLE),
+      .hide => sdl.SDL_ShowCursor(sdl.SDL_DISABLE),
+    };
   }
 };
