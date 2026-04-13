@@ -59,7 +59,12 @@ pub const DrawContext = struct {
   imageSmoothingQuality: []const u8 = "medium",
 
   transformMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
-  stack: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
+  stack: struct{
+    transformationMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
+    strokeStyle: u32 = 0xFFFFFFFF,
+    fillStyle: u32 = 0xFFFFFFFF,
+    thickness: u32 = 0,
+  } = .{},
 
   path_command_stack: std.ArrayList(PathCommand),
 
@@ -185,13 +190,19 @@ pub const DrawContext = struct {
   // stack.
   // ⚠️ Only one level of stack for now.
   pub fn save(self: Self) !void {
-    self.stack = self.transformMatrix;
+    self.stack.transformationMatrix = self.transformMatrix;
+    self.stack.strokeStyle = self.strokeStyle;
+    self.stack.fillStyle = self.fillStyle;
+    self.stack.thickness = self.thickness;
   }
   // Restores the most recently saved canvas state by popping the top entry
   // in the drawing state stack. If there is no saved state, this method does
   // nothing.
   pub fn restore(self: Self) void {
-    self.transformMatrix = self.stack;
+    self.transformMatrix = self.stack.transformMatrix;
+    self.strokeStyle = self.stack.strokeStyle;
+    self.fillStyle = self.stack.fillStyle;
+    self.thickness = self.stack.thickness;
   }
   // resets the rendering context to its default state, allowing it to be
   // reused for drawing something else without having to explicitly reset all
