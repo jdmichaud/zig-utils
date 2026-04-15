@@ -176,6 +176,13 @@ fn defiltering(header: IhdrHeader, output: std.ArrayList(u8)) !usize {
     var line_index: usize = 0; // points at the beginning of the line to defilter
     var write_index: usize = 0; // points at where to write
     const line_width = header.getWidthInBytes();
+    const bpp: usize = switch (header.getColorType()) {
+        ColorType.grayscale => 1 * header.bit_depth / 8,
+        ColorType.truecolor => 3 * header.bit_depth / 8,
+        ColorType.grayscaleAlpha => 2 * header.bit_depth / 8,
+        ColorType.truecolorAlpha => 4 * header.bit_depth / 8,
+        ColorType.indexed => 1,
+    };
     while (line_index < output.items.len) {
         const filtering_type: FilteringType = @enumFromInt(output.items[line_index]);
         if (filtering_type == FilteringType.none) {
@@ -188,9 +195,9 @@ fn defiltering(header: IhdrHeader, output: std.ArrayList(u8)) !usize {
                 // A is the equivalent component of the pixel to the left (0 if we are on the first pixel of a line)
                 // B is the equivalent component of the pixel to the top (0 if we are on the first line)
                 // C is the equivalent component of the pixel to the top left (0 if we are on the first pixel of a line or on the first line)
-                const a = if ((write_index % line_width) > 3) output.items[write_index - 4] else 0;
+                const a = if ((write_index % line_width) >= bpp) output.items[write_index - bpp] else 0;
                 const b = if (write_index >= line_width) output.items[write_index - line_width] else 0;
-                const c = if ((write_index >= line_width) and (write_index % line_width) > 3) output.items[write_index - 4 - line_width] else 0;
+                const c = if ((write_index >= line_width) and (write_index % line_width) >= bpp) output.items[write_index - bpp - line_width] else 0;
                 switch (filtering_type) {
                     FilteringType.sub => {
                         output.items[write_index] = output.items[byte_index] +% a;
@@ -277,6 +284,18 @@ fn indexed_to_rgba(allocator: std.mem.Allocator, header: IhdrHeader, palette: []
     return converted;
 }
 
+fn rgb_to_rgba(allocator: std.mem.Allocator, uncompressed_data: []const u8) ![]u8 {
+    const pixel_num = @divExact(uncompressed_data.len, 3);
+    const converted = try allocator.alloc(u8, pixel_num * 4);
+    for (0..pixel_num) |i| {
+        converted[i * 4    ] = uncompressed_data[i * 3    ];
+        converted[i * 4 + 1] = uncompressed_data[i * 3 + 1];
+        converted[i * 4 + 2] = uncompressed_data[i * 3 + 2];
+        converted[i * 4 + 3] = 0xFF;
+    }
+    return converted;
+}
+
 pub const PngImageData = struct {
     header: IhdrHeader,
     data: []u8,
@@ -357,11 +376,17 @@ pub fn load_png(allocator: std.mem.Allocator, input: []const u8) !PngImageData {
 
     if (found_header) {
         var uncompressed_data = try unzip(allocator, idat_data);
+        errdefer uncompressed_data.deinit();
         const defiltered_size = try defiltering(header, uncompressed_data);
         try uncompressed_data.resize(defiltered_size);
 
         const data = brk: switch (header.getColorType()) {
             ColorType.truecolorAlpha => break :brk try uncompressed_data.toOwnedSlice(),
+            ColorType.truecolor => {
+                const converted_data = try rgb_to_rgba(allocator, uncompressed_data.items);
+                uncompressed_data.deinit();
+                break :brk converted_data;
+            },
             ColorType.indexed => {
                 var converted_data = try indexed_to_rgba(allocator, header, &palette, &transparency, uncompressed_data.items);
                 uncompressed_data.deinit();
@@ -392,7 +417,7 @@ pub fn main() !void {
 
     const content = try std.fs.cwd().readFileAlloc(allocator, args[1], std.math.maxInt(usize));
     defer allocator.free(content);
-    const png = try load_png(allocator, content);
+    var png = try load_png(allocator, content);
     png.deinit(allocator);
 }
 
@@ -613,7 +638,7 @@ test "load_png" {
           // =====================
           0x00, 0x00, 0x00, 0x04,             // length = 4
           0x74, 0x52, 0x4E, 0x53,             // "tRNS"
-              0xFF, 0xFF, 0xFF, 0x00,         // last entry fully transparent
+          0xFF, 0xFF, 0xFF, 0x00,             // last entry fully transparent
           0x6B, 0xFA, 0xB0, 0x26,             // CRC
 
           // =====================
@@ -733,6 +758,67 @@ test "load_png" {
             // R     G     B     A     R     G     B     A
             0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
             0x00, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+        }, png.data);
+        png.deinit(std.testing.allocator);
+    }
+
+    // A simple 2x2 png layout as follow:
+    // red, blue
+    // green, transparent white
+    // No filter, truecolor RGB (no alpha)
+    {
+        const simple_png_8bit = [_]u8{
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // magic
+            0x00, 0x00, 0x00, 0x0D, // 13 bytes for the header
+            0x49, 0x48, 0x44, 0x52, // "IHDR"
+            0x00, 0x00, 0x00, 0x02, // width
+            0x00, 0x00, 0x00, 0x02, // height
+            0x08, // bit depth
+            0x02, // color type: truecolor (RGB, no alpha)
+            0x00, // compression method
+            0x00, // filter method
+            0x00, // interlace method
+            0x00, 0x00, 0x00, 0x00, // CRC (not checked)
+
+            // =====================
+            // IDAT (Image Data)
+            // =====================
+            0x00, 0x00, 0x00, 0x19, // Length: 25 bytes
+            0x49, 0x44, 0x41, 0x54, // "IDAT"
+
+            // ZLIB STREAM (level=0, stored block)
+            0x78, 0x01,             // Zlib Header
+            0x01,                   // Block Header (Final=1, Type=00 Stored)
+            0x0E, 0x00,             // Len = 14 bytes (2 rows * (1 filter + 6 pixel bytes))
+            0xF1, 0xFF,             // NLen (One's complement)
+
+            // RAW DATA
+            0x00,                   // Filter Row 1 (None)
+            0xFF, 0x00, 0x00,       // red
+            0x00, 0x00, 0xFF,       // blue
+            0x00,                   // Filter Row 2 (None)
+            0x00, 0xFF, 0x00,       // green
+            0xFF, 0xFF, 0xFF,       // white
+
+            // ADLER-32 CHECKSUM
+            0x1F, 0xEE, 0x05, 0xFB,
+
+            // IDAT CRC-32
+            0x00, 0x00, 0x00, 0x00,
+
+            // =====================
+            // IEND
+            // =====================
+            0x00, 0x00, 0x00, 0x00,
+            0x49, 0x45, 0x4E, 0x44,
+            0xAE, 0x42, 0x60, 0x82,
+        };
+
+        var png = try load_png(std.testing.allocator, &simple_png_8bit);
+        try std.testing.expectEqualSlices(u8, &[_]u8{
+            // R     G     B     A     R     G     B     A
+            0xFF, 0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
+            0x00, 0xFF, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
         }, png.data);
         png.deinit(std.testing.allocator);
     }
