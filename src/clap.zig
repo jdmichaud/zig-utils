@@ -45,7 +45,7 @@
 // }).parse(args);
 //
 // const filepath = parsedArgs.arguments.items[0];
-// const memsize = if (args.getOption([]const u8, "memory-size")) |memsizeArg| blkinner: {
+// const memsize = if (try args.getOption([]const u8, "memory-size")) |memsizeArg| blkinner: {
 //   const lastChar = memsizeArg[memsizeArg.len - 1];
 //   break :blkinner switch (lastChar) {
 //     'k', 'K' => try std.fmt.parseInt(usize, memsizeArg[0..memsizeArg.len - 1], 10) * 1024,
@@ -174,7 +174,7 @@ pub const Args = struct {
         return null;
       },
       else => @compileError(std.fmt.comptimePrint(
-          "getOption: unhandled type {}",
+          "getOption: unsupported type {}",
           .{ T },
       )),
     }
@@ -216,11 +216,12 @@ pub fn parser(argsDescriptor: ArgDescriptor) type {
                 if (option.arg) |optionArg| {
                   _ = optionArg;
                   // We have an argument to the option
-                  if (i > args.len - 1 or args[i + 1][0] == '-') {
+                  if (i > args.len - 2 or args[i + 1][0] == '-') {
                     // Missing argument
                     stderr.print("error: option {s} expected an argument\n", .{ arg })
                         catch unreachable;
                     printUsage(allocator, argsDescriptor);
+                    std.posix.exit(1);
                   }
                   argsStore.optionMap.put(option.long, args[i + 1])
                     catch @panic("increase fixed buffer size");
