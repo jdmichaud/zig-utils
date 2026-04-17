@@ -114,3 +114,5 @@ pub fn asFloat(comptime T: type, integer: anytype) T {
 pub fn asf32(integer: anytype) f32 {
   return asFloat(f32, integer);
 }
+
+pub const partial_match = @import("partial_match.zig");
