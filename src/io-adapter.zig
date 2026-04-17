@@ -19,6 +19,8 @@ pub const MouseButton = enum(u8) {
 
 pub const MouseButtonEvent = struct {
   button: MouseButton,
+  x: i32,
+  y: i32,
 };
 
 pub const MouseWheel = struct {
@@ -499,10 +501,18 @@ pub const SDLAdapter = struct {
         };
       },
       sdl.SDL_MOUSEBUTTONDOWN => {
-        return InputEvent{ .MouseDown = MouseButtonEvent{ .button = @enumFromInt(event.button.button) } };
+        return InputEvent{ .MouseDown = MouseButtonEvent{
+          .button = @enumFromInt(event.button.button),
+          .x = event.button.x,
+          .y = event.button.y,
+        } };
       },
       sdl.SDL_MOUSEBUTTONUP => {
-        return InputEvent{ .MouseUp = MouseButtonEvent{ .button = @enumFromInt(event.button.button) } };
+        return InputEvent{ .MouseUp = MouseButtonEvent{
+          .button = @enumFromInt(event.button.button),
+          .x = event.button.x,
+          .y = event.button.y,
+        } };
       },
       sdl.SDL_MOUSEWHEEL => {
         return InputEvent{ .MouseWheel = MouseWheel{ .y = event.wheel.y } };
