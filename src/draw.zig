@@ -60,7 +60,7 @@ pub const DrawContext = struct {
 
   transformMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
   stack: struct{
-    transformationMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
+    transformMatrix: [6]f32 = [_]f32{ 1, 0, 0, 1, 0, 0 },
     strokeStyle: u32 = 0xFFFFFFFF,
     fillStyle: u32 = 0xFFFFFFFF,
     thickness: u32 = 0,
@@ -189,8 +189,8 @@ pub const DrawContext = struct {
   // Saves the entire state of the canvas by pushing the current state onto a
   // stack.
   // ⚠️ Only one level of stack for now.
-  pub fn save(self: Self) !void {
-    self.stack.transformationMatrix = self.transformMatrix;
+  pub fn save(self: *Self) void {
+    self.stack.transformMatrix = self.transformMatrix;
     self.stack.strokeStyle = self.strokeStyle;
     self.stack.fillStyle = self.fillStyle;
     self.stack.thickness = self.thickness;
@@ -198,7 +198,7 @@ pub const DrawContext = struct {
   // Restores the most recently saved canvas state by popping the top entry
   // in the drawing state stack. If there is no saved state, this method does
   // nothing.
-  pub fn restore(self: Self) void {
+  pub fn restore(self: *Self) void {
     self.transformMatrix = self.stack.transformMatrix;
     self.strokeStyle = self.stack.strokeStyle;
     self.fillStyle = self.stack.fillStyle;
