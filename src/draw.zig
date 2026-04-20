@@ -245,7 +245,6 @@ pub const DrawContext = struct {
     const yi: i16 = @intFromFloat(@round(yc));
     const widthi: i16 = @intFromFloat(@round(widthc));
     const heighti: i16 = @intFromFloat(@round(heightc));
-
     self.line(xi, yi, xi + widthi, yi);
     self.line(xi + widthi, yi, xi + widthi, yi + heighti);
     self.line(xi + widthi, yi + heighti, xi, yi + heighti);
@@ -306,7 +305,7 @@ pub const DrawContext = struct {
           const x: u16 = @intFromFloat(ux);
           if (uy > vy) std.mem.swap(@TypeOf(uy), &uy, &vy);
           var y: u16 = @intFromFloat(uy);
-          while (y < @as(u16, @intFromFloat(vy))) : (y += 1) {
+          while (y <= @as(u16, @intFromFloat(vy))) : (y += 1) {
             self.buffer[y * self.width + x] = self.strokeStyle;
           }
           return;
