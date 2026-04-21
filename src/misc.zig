@@ -115,46 +115,5 @@ pub fn asf32(integer: anytype) f32 {
   return asFloat(f32, integer);
 }
 
-// Track allocation and give peak memory consumption
-pub const TrackingAllocator = struct {
-  parent: std.mem.Allocator,
-  bytes: usize = 0,
-  peak: usize = 0,
-
-  pub fn allocator(self: *@This()) std.mem.Allocator {
-    return .{ .ptr = self, .vtable = &vtable };
-  }
-
-  const vtable: std.mem.Allocator.VTable = .{
-    .alloc = alloc, .resize = resize, .remap = remap, .free = free,
-  };
-
-  fn alloc(ctx: *anyopaque, n: usize, a: std.mem.Alignment, r: usize) ?[*]u8 {
-    const s: *@This() = @ptrCast(@alignCast(ctx));
-    const p = s.parent.rawAlloc(n, a, r) orelse return null;
-    s.bytes += n;
-    s.peak = @max(s.peak, s.bytes);
-    return p;
-  }
-  fn resize(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, n: usize, r: usize) bool {
-    const s: *@This() = @ptrCast(@alignCast(ctx));
-    if (!s.parent.rawResize(buf, a, n, r)) return false;
-    s.bytes = s.bytes + n - buf.len;
-    s.peak = @max(s.peak, s.bytes);
-    return true;
-  }
-  fn remap(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, n: usize, r: usize) ?[*]u8 {
-    const s: *@This() = @ptrCast(@alignCast(ctx));
-    const p = s.parent.rawRemap(buf, a, n, r) orelse return null;
-    s.bytes = s.bytes + n - buf.len;
-    s.peak = @max(s.peak, s.bytes);
-    return p;
-  }
-  fn free(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, r: usize) void {
-    const s: *@This() = @ptrCast(@alignCast(ctx));
-    s.parent.rawFree(buf, a, r);
-    s.bytes -= buf.len;
-  }
-};
-
+pub const tracking_allocator = @import("tracking_allocator.zig");
 pub const partial_match = @import("partial_match.zig");
