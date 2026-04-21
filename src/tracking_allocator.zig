@@ -37,7 +37,7 @@
 //!     bookkeeping's own allocations would show up in the profile and
 //!     possibly cause recursion.
 //!
-//! Made with Claude Opus 4.6
+//! Made with Claude Opus 4.7
 
 const std = @import("std");
 

@@ -117,3 +117,4 @@ pub fn asf32(integer: anytype) f32 {
 
 pub const tracking_allocator = @import("tracking_allocator.zig");
 pub const partial_match = @import("partial_match.zig");
+pub const SmallArrayList = @import("small_array_list.zig").SmallArrayList;

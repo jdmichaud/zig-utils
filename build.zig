@@ -10,12 +10,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const draw_mod = b.addModule("draw", .{
-        .root_source_file = b.path("src/draw.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const io_adapter_mod = b.addModule("io_adapter", .{
         .root_source_file = b.path("src/io-adapter.zig"),
         .target = target,
@@ -26,6 +20,15 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/misc.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const draw_mod = b.addModule("draw", .{
+        .root_source_file = b.path("src/draw.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "misc", .module = misc_mod },
+        }
     });
 
     const geometry_mod = b.addModule("geometry", .{
@@ -66,6 +69,7 @@ pub fn build(b: *std.Build) void {
     add_example(b, "draw", "examples/draw.zig", "Run the draw example", imports, target, optimize);
     add_test(b, "draw-test", draw_mod);
     add_test(b, "geometry-test", geometry_mod);
+    add_test(b, "misc-test", misc_mod);
 }
 
 pub fn add_test(b: *std.Build, command: []const u8, mod: *std.Build.Module) void {

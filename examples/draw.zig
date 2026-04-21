@@ -5,6 +5,7 @@
 // zig build -freference-trace=8 draw -- interaction examples/sprite.png
 // zig build -freference-trace=8 draw -- print /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf Test
 const std = @import("std");
+const builtin = @import("builtin");
 const misc = @import("misc");
 const draw = @import("draw");
 const ioAdapter = @import("io_adapter");
@@ -25,7 +26,23 @@ const Shape = enum {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+
+    var trackingAllocator: ?misc.tracking_allocator.TrackingAllocator = null;
+    defer if (trackingAllocator) |*ta| {
+        ta.report(std.io.getStdErr().writer()) catch {};
+        ta.deinit();
+    };
+    // In debug mode, show a memory allocation report
+    const allocator = if (builtin.mode == .Debug) lbl: {
+        trackingAllocator = misc.tracking_allocator.TrackingAllocator.init(
+            std.heap.page_allocator,
+            gpa.allocator(),  // MUST be separate from parent
+            .{ .capture_full_trace = false },
+        );
+        break :lbl trackingAllocator.?.allocator();
+    } else lbl: {
+        break :lbl gpa.allocator();
+    };
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);

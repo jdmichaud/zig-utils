@@ -1,5 +1,8 @@
 // zig test -freference-trace=8 src/draw.zig
 const std = @import("std");
+const SmallArrayList = @import("misc").SmallArrayList;
+// const ArrayList = std.ArrayList;
+const ArrayList = SmallArrayList;
 
 const fontfile = @embedFile("dos_8x8_font_white.pbm");
 
@@ -66,7 +69,7 @@ pub const DrawContext = struct {
     thickness: u32 = 0,
   } = .{},
 
-  path_command_stack: std.ArrayList(PathCommand),
+  path_command_stack: ArrayList(PathCommand),
 
   allocator: std.mem.Allocator,
 
@@ -78,7 +81,7 @@ pub const DrawContext = struct {
       .width = width,
       .height = height,
       .buffer = buffer,
-      .path_command_stack = std.ArrayList(PathCommand).init(allocator),
+      .path_command_stack = ArrayList(PathCommand).init(allocator),
       .allocator = allocator,
     };
   }
@@ -95,7 +98,7 @@ pub const DrawContext = struct {
       .width = width,
       .height = height,
       .buffer = buffer,
-      .path_command_stack = std.ArrayList(PathCommand).init(allocator),
+      .path_command_stack = ArrayList(PathCommand).init(allocator),
       .allocator = allocator,
     };
   }
@@ -461,7 +464,7 @@ pub const DrawContext = struct {
   pub fn fill(self: *Self) void {
     var pen: [2]i16 = .{ 0, 0 };
     var first_point: [2]i16 = .{ 0, 0 };
-    var vertices = std.ArrayList([2]f32).init(self.allocator);
+    var vertices = ArrayList([2]f32).init(self.allocator);
     for (self.path_command_stack.items) |command| {
       switch (command) {
         PathCommand.move_to => |position| {
@@ -1138,7 +1141,7 @@ pub const DrawContext = struct {
       }
 
       /// Define a function to initialize all edges of the polygon.
-      fn initializeEdges(vrtces: []const [2]f32, edges: *std.ArrayList(Edge)) void {
+      fn initializeEdges(vrtces: []const [2]f32, edges: *ArrayList(Edge)) void {
         for (vrtces, 0..) |p1, i| {
           const p2 = vrtces[(i + 1) % vrtces.len];
 
@@ -1161,7 +1164,7 @@ pub const DrawContext = struct {
       }
 
       /// Define a function to initialize the global edge table.
-      fn initializeGlobalEdgeTable(edges: []const Edge, global_edge_table: *std.ArrayList(Edge)) void {
+      fn initializeGlobalEdgeTable(edges: []const Edge, global_edge_table: *ArrayList(Edge)) void {
         global_edge_table.appendSlice(edges) catch @panic("OOM");
 
         // Sort by min_y, then x_at_min_y
@@ -1193,7 +1196,7 @@ pub const DrawContext = struct {
       fn getActiveEdgeTable(
         source_table: []const Edge,
         scan_line: i32,
-        active_edge_table: *std.ArrayList(Edge),
+        active_edge_table: *ArrayList(Edge),
       ) void {
         active_edge_table.clearRetainingCapacity();
         for (source_table) |edge| {
@@ -1217,11 +1220,13 @@ pub const DrawContext = struct {
 
     if (vertices.len < 3) return;
 
-    var edge_list = std.ArrayList(Fns.Edge).init(allocator);
+    var edge_static_buffer: [10]Fns.Edge = undefined;
+    var edge_list = ArrayList(Fns.Edge).initFromBuffer(allocator, edge_static_buffer[0..]);
     defer edge_list.deinit();
     Fns.initializeEdges(vertices, &edge_list);
 
-    var global_edge_table = std.ArrayList(Fns.Edge).init(allocator);
+    var global_edge_static_buffer: [10]Fns.Edge = undefined;
+    var global_edge_table = ArrayList(Fns.Edge).initFromBuffer(allocator, global_edge_static_buffer[0..]);
     defer global_edge_table.deinit();
     Fns.initializeGlobalEdgeTable(edge_list.items, &global_edge_table);
 
@@ -1229,7 +1234,8 @@ pub const DrawContext = struct {
 
     // Initialize scan-line and active edge table.
     var scan_line: i16 = global_edge_table.items[0].min_y;
-    var active_edge_table = std.ArrayList(Fns.Edge).init(allocator);
+    var active_edge_table_buffer: [10]Fns.Edge = undefined;
+    var active_edge_table = ArrayList(Fns.Edge).initFromBuffer(allocator, active_edge_table_buffer[0..]);
     defer active_edge_table.deinit();
     Fns.getActiveEdgeTable(global_edge_table.items, scan_line, &active_edge_table);
 
