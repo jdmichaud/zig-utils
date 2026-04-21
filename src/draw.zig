@@ -88,7 +88,7 @@ pub const DrawContext = struct {
     self.path_command_stack.deinit();
   }
 
-  pub fn fromBuffer(allocator: std.mem.Allocator, buffer: []u32, width: u32, height: u32) !Self {
+  pub fn fromBuffer(allocator: std.mem.Allocator, buffer: []u32, width: u32, height: u32) Self {
     @memset(buffer, 0);
 
     return Self{
