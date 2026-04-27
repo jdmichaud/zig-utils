@@ -54,7 +54,7 @@ pub const DrawContext = struct {
   buffer: []u32,
   strokeStyle: u32 = 0xFFFFFFFF,
   fillStyle: u32 = 0xFFFFFFFF,
-  thickness: u32 = 0,
+  thickness: u32 = 1,
   line_dash_segments: []const f32 = &[_]f32{},
   alpha: bool = false,
   globalAlpha: f32 = 1.0,
@@ -254,10 +254,13 @@ pub const DrawContext = struct {
     const yi: i16 = @intFromFloat(@round(yc));
     const widthi: i16 = @intFromFloat(@round(widthc));
     const heighti: i16 = @intFromFloat(@round(heightc));
-    self.line(xi, yi, xi + widthi, yi);
-    self.line(xi + widthi, yi, xi + widthi, yi + heighti);
-    self.line(xi + widthi, yi + heighti, xi, yi + heighti);
-    self.line(xi, yi + heighti, xi, yi);
+    // Shorten each line by `thickness` at its endpoint so the next line's
+    // band picks up the corner cleanly without overlapping the previous one.
+    const t: i16 = @intCast(self.thickness);
+    self.line(xi, yi, xi + widthi - t, yi);
+    self.line(xi + widthi, yi, xi + widthi, yi + heighti - t);
+    self.line(xi + widthi, yi + heighti, xi + t, yi + heighti);
+    self.line(xi, yi + heighti, xi, yi + t);
   }
   // Renders a filled circle with a center at (x, y) and a radius
   pub fn fillCircle(self: Self, x: i16, y: i16, radius: i16) void {
