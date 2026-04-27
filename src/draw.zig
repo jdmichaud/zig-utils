@@ -57,6 +57,7 @@ pub const DrawContext = struct {
   thickness: u32 = 0,
   line_dash_segments: []const f32 = &[_]f32{},
   alpha: bool = false,
+  globalAlpha: f32 = 1.0,
   // For now, always considered false
   imageSmoothingEnabled: bool = false,
   imageSmoothingQuality: []const u8 = "medium",
@@ -229,6 +230,11 @@ pub const DrawContext = struct {
   }
   // fill a rectangle with color
   pub fn fillRect(self: Self, x: i16, y: i16, width: i16, height: i16) void {
+    if (x == 0 and y == 0 and width == self.width and height == self.height) {
+      @memset(self.buffer, self.fillStyle);
+      return;
+    }
+
     const xc, const yc = self.transformPoint(asf32(x), asf32(y));
     const widthc, const heightc = self.transformVector(asf32(width), asf32(height));
     self.fillPolygon(self.allocator, &.{
@@ -265,18 +271,29 @@ pub const DrawContext = struct {
     const yi: i16 = @intFromFloat(@round(yc));
     const radiusi: i16 = @intFromFloat(@round(radiusc));
     const radiusi_squared: i32 = @as(i32, @intCast(radiusi)) * radiusi;
-    var j = yi - radiusi;
-    while (j <= yi + radiusi) {
-      var i = xi - radiusi;
-      while (i <= xi + radiusi) {
-        const dx: i32 = i - xi;
-        const dy: i32 = j - yi;
-        if (dx * dx + dy * dy <= radiusi_squared) {
-          self.internalPlot(i, j, self.fillStyle);
+    const ga: u16 = @intFromFloat(@round(self.globalAlpha * 255.0));
+    const has_ga_runtime = ga < 255;
+    inline for (.{ false, true }) |canvas_alpha| {
+      if (self.alpha == canvas_alpha) {
+        inline for (.{ false, true }) |has_global_alpha| {
+          if (has_ga_runtime == has_global_alpha) {
+            var j = yi - radiusi;
+            while (j <= yi + radiusi) {
+              var i = xi - radiusi;
+              while (i <= xi + radiusi) {
+                const dx: i32 = i - xi;
+                const dy: i32 = j - yi;
+                if (dx * dx + dy * dy <= radiusi_squared) {
+                  self.internalPlot(canvas_alpha, has_global_alpha, ga, i, j, self.fillStyle);
+                }
+                i += 1;
+              }
+              j += 1;
+            }
+            return;
+          }
         }
-        i += 1;
       }
-      j += 1;
     }
   }
   // Draws a line.
@@ -284,60 +301,72 @@ pub const DrawContext = struct {
     // std.debug.assert(startx >= 0 and starty >= 0 and endx >= 0 and endy >= 0);
     // This is commented because, although debug performances are much better,
     // release performances are worst!
-    const builtin = @import("builtin");
-    if (builtin.mode == .Debug) {
-      // This whole block is an optimization for vertical and horizontal line
-      const ux =
-        self.transformMatrix[_a] * @as(f32, @floatFromInt(startx)) +
-        self.transformMatrix[_c] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_e];
-      var uy =
-        self.transformMatrix[_b] * @as(f32, @floatFromInt(startx)) +
-        self.transformMatrix[_d] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_f];
-      const vx =
-        self.transformMatrix[_a] * @as(f32, @floatFromInt(endx)) +
-        self.transformMatrix[_c] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_e];
-      var vy =
-        self.transformMatrix[_b] * @as(f32, @floatFromInt(endx)) +
-        self.transformMatrix[_d] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_f];
+    const ga: u16 = @intFromFloat(@round(self.globalAlpha * 255.0));
+    const has_ga_runtime = ga < 255;
+    inline for (.{ false, true }) |canvas_alpha| {
+      if (self.alpha == canvas_alpha) {
+        inline for (.{ false, true }) |has_global_alpha| {
+          if (has_ga_runtime == has_global_alpha) {
+            const builtin = @import("builtin");
+            // Fast path for axis-aligned lines is only safe when no blending happens.
+            // When canvas_alpha is false there is no blending regardless of globalAlpha.
+            if (builtin.mode == .Debug and comptime !canvas_alpha) {
+              const ux =
+                self.transformMatrix[_a] * @as(f32, @floatFromInt(startx)) +
+                self.transformMatrix[_c] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_e];
+              var uy =
+                self.transformMatrix[_b] * @as(f32, @floatFromInt(startx)) +
+                self.transformMatrix[_d] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_f];
+              const vx =
+                self.transformMatrix[_a] * @as(f32, @floatFromInt(endx)) +
+                self.transformMatrix[_c] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_e];
+              var vy =
+                self.transformMatrix[_b] * @as(f32, @floatFromInt(endx)) +
+                self.transformMatrix[_d] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_f];
 
-      if (ux > 0 and uy > 0 and vx > 0 and vy > 0 and
-        ux < asf32(self.width) and uy < asf32(self.height) and vx < asf32(self.width) and vy < asf32(self.height)) {
-        // If a line is entirely in the canvas
-        if (ux == vx) {
-          // vertical line
-          const x: u16 = @intFromFloat(ux);
-          if (uy > vy) std.mem.swap(@TypeOf(uy), &uy, &vy);
-          var y: u16 = @intFromFloat(uy);
-          while (y <= @as(u16, @intFromFloat(vy))) : (y += 1) {
-            self.buffer[y * self.width + x] = self.strokeStyle;
+              if (ux > 0 and uy > 0 and vx > 0 and vy > 0 and
+                ux < asf32(self.width) and uy < asf32(self.height) and vx < asf32(self.width) and vy < asf32(self.height)) {
+                // If a line is entirely in the canvas
+                if (ux == vx) {
+                  // vertical line
+                  const x: u16 = @intFromFloat(ux);
+                  if (uy > vy) std.mem.swap(@TypeOf(uy), &uy, &vy);
+                  var y: u16 = @intFromFloat(uy);
+                  while (y <= @as(u16, @intFromFloat(vy))) : (y += 1) {
+                    self.buffer[y * self.width + x] = self.strokeStyle;
+                  }
+                  return;
+                } else if (uy == vy) {
+                  // horizontal line
+                  var startBuffer = @as(u16, @intFromFloat(uy)) * self.width + @as(u16, @intFromFloat(ux));
+                  var endBuffer = @as(u16, @intFromFloat(vy)) * self.width + @as(u16, @intFromFloat(vx));
+                  if (startBuffer > endBuffer) std.mem.swap(@TypeOf(startBuffer), &startBuffer, &endBuffer);
+                  @memset(self.buffer[startBuffer..endBuffer], self.strokeStyle);
+                  return;
+                }
+              }
+            }
+            // Otherwise, we use a general but slow algorithm
+            const ux: i16 = @intFromFloat(
+              self.transformMatrix[_a] * @as(f32, @floatFromInt(startx)) +
+              self.transformMatrix[_c] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_e]);
+            const uy: i16 = @intFromFloat(
+              self.transformMatrix[_b] * @as(f32, @floatFromInt(startx)) +
+              self.transformMatrix[_d] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_f]);
+            const vx: i16 = @intFromFloat(
+              self.transformMatrix[_a] * @as(f32, @floatFromInt(endx)) +
+              self.transformMatrix[_c] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_e]);
+            const vy: i16 = @intFromFloat(
+              self.transformMatrix[_b] * @as(f32, @floatFromInt(endx)) +
+              self.transformMatrix[_d] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_f]);
+            self.drawThickLine(canvas_alpha, has_global_alpha, ga, ux, uy, vx, vy);
+            // self.drawLineOverlap(startx, starty, endx, endy, 0);
+            // self.drawLineWu(startx, starty, endx, endy, 0);
+            return;
           }
-          return;
-        } else if (uy == vy) {
-          // horizontal line
-          var startBuffer = @as(u16, @intFromFloat(uy)) * self.width + @as(u16, @intFromFloat(ux));
-          var endBuffer = @as(u16, @intFromFloat(vy)) * self.width + @as(u16, @intFromFloat(vx));
-          if (startBuffer > endBuffer) std.mem.swap(@TypeOf(startBuffer), &startBuffer, &endBuffer);
-          @memset(self.buffer[startBuffer..endBuffer], self.strokeStyle);
-          return;
         }
       }
     }
-    // Otherwise, we use a general but slow algorithm
-    const ux: i16 = @intFromFloat(
-      self.transformMatrix[_a] * @as(f32, @floatFromInt(startx)) +
-      self.transformMatrix[_c] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_e]);
-    const uy: i16 = @intFromFloat(
-      self.transformMatrix[_b] * @as(f32, @floatFromInt(startx)) +
-      self.transformMatrix[_d] * @as(f32, @floatFromInt(starty)) + self.transformMatrix[_f]);
-    const vx: i16 = @intFromFloat(
-      self.transformMatrix[_a] * @as(f32, @floatFromInt(endx)) +
-      self.transformMatrix[_c] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_e]);
-    const vy: i16 = @intFromFloat(
-      self.transformMatrix[_b] * @as(f32, @floatFromInt(endx)) +
-      self.transformMatrix[_d] * @as(f32, @floatFromInt(endy)) + self.transformMatrix[_f]);
-    self.drawThickLine(ux, uy, vx, vy);
-    // self.drawLineOverlap(startx, starty, endx, endy, 0);
-    // self.drawLineWu(startx, starty, endx, endy, 0);
   }
   // Draws a point.
   pub inline fn plot(self: Self, x: i16, y: i16, acolor: u32) void {
@@ -596,40 +625,28 @@ pub const DrawContext = struct {
       const dest_ptr: [*]u32 = self.buffer.ptr;
       const src_ptr: [*]const u32 = @ptrCast(@alignCast(imageData.data.ptr));
       const start_buffer: usize = @intCast(dx + dy * self.width);
-      for (0..height) |j| {
-        var buffer_index = start_buffer + j * self.width;
-        var image_index = sx + (sy + j) * imageData.width;
-        for (0..width) |i| {
-          _ = i;
-          defer {
-            buffer_index += 1;
-            image_index += 1;
+      const ga: u16 = @intFromFloat(@round(self.globalAlpha * 255.0));
+      const has_global_alpha_runtime = ga < 255;
+      inline for (.{ false, true }) |has_global_alpha| {
+        if (has_global_alpha_runtime == has_global_alpha) {
+          for (0..height) |j| {
+            var buffer_index = start_buffer + j * self.width;
+            var image_index = sx + (sy + j) * imageData.width;
+            for (0..width) |i| {
+              _ = i;
+              defer {
+                buffer_index += 1;
+                image_index += 1;
+              }
+
+              const fg_packed = src_ptr[image_index];
+              const bg_packed = dest_ptr[buffer_index];
+              const result_8 = blend(has_global_alpha, bg_packed, fg_packed, ga);
+              // 7. Store full pixel (Single instruction store)
+              dest_ptr[buffer_index] = result_8;
+            }
           }
-
-          const fg_packed = src_ptr[image_index];
-          const bg_packed = dest_ptr[buffer_index];
-          // // We expand to u16 immediately to prevent overflow during multiply
-          // const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
-          // const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
-          // const alpha_val = fg[3];
-          // // Optimization: If alpha is 0, skip. If 255, simple copy.
-          // if (alpha_val == 0) continue;
-          // if (alpha_val == 255) {
-          //     dest_ptr[buffer_index] = fg_packed;
-          //     continue;
-          // }
-
-          // const a: @Vector(4, u16) = @splat(alpha_val);
-          // const max: @Vector(4, u16) = @splat(255);
-          // const inv_a = max - a;
-          // // (bg * inv_a + fg * a) / 255
-          // const tmp = bg * inv_a + fg * a;
-          // const result_16 = (tmp + @as(@Vector(4, u16), @splat(1)) + (tmp >> @as(@Vector(4, u8), @splat(8)))) >> @as(@Vector(4, u8), @splat(8));
-
-          // const result_8: @Vector(4, u8) = @intCast(result_16);
-          const result_8 = blend(bg_packed, fg_packed);
-          // 7. Store full pixel (Single instruction store)
-          dest_ptr[buffer_index] = result_8;
+          return;
         }
       }
     }
@@ -712,6 +729,7 @@ pub const DrawContext = struct {
 
     const no_stretching = sWidth == dWidth and sHeight == dHeight;
     const runtime_interp = self.getInterpolationType();
+    const has_global_alpha_runtime = self.globalAlpha < 1.0;
 
     // 1. Iterate over possible boolean values at compile-time
     inline for (.{ false, true }) |no_stretching_param| {
@@ -722,15 +740,19 @@ pub const DrawContext = struct {
             inline for (.{ false, true }) |apply_premultiplied_alpha| {
               // We apply the premultiplication only if it is NOT already apply in the image
               if (image.premultipliedAlpha != apply_premultiplied_alpha) {
-                // 3. Use 'inline else' to unroll the enum switch
-                switch (runtime_interp) {
-                  inline else => |it| {
-                    self.innerDrawImage3(
-                      no_stretching_param, canvas_alpha, apply_premultiplied_alpha, it,
-                      image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight
-                    );
-                    return;
-                  },
+                inline for (.{ false, true }) |has_global_alpha| {
+                  if (has_global_alpha_runtime == has_global_alpha) {
+                    // 3. Use 'inline else' to unroll the enum switch
+                    switch (runtime_interp) {
+                      inline else => |it| {
+                        self.innerDrawImage3(
+                          no_stretching_param, canvas_alpha, apply_premultiplied_alpha, has_global_alpha, it,
+                          image, sx, sy, sWidth, sHeight, dx, dy, dWidth, dHeight
+                        );
+                        return;
+                      },
+                    }
+                  }
                 }
               }
             }
@@ -741,9 +763,14 @@ pub const DrawContext = struct {
   }
 
   pub fn innerDrawImage3(self: *Self, comptime no_stretching: bool, comptime alpha: bool,
-    comptime premultiplyAlpha: bool, comptime interpolation_type: InterpolationType,
+    comptime premultiplyAlpha: bool, comptime has_global_alpha: bool,
+    comptime interpolation_type: InterpolationType,
     image: ImageData, sx: i32, sy: i32, sWidth: usize, sHeight: usize,
     dx: i32, dy: i32, dWidth: usize, dHeight: usize) void {
+    const ga: u16 = if (comptime has_global_alpha)
+      @intFromFloat(@round(self.globalAlpha * 255.0))
+    else
+      0;
     const fsx: f32 = @floatFromInt(sx);
     const fsy: f32 = @floatFromInt(sy);
     const fsWidth: f32 = @floatFromInt(sWidth);
@@ -922,7 +949,7 @@ pub const DrawContext = struct {
         const buffer_index = j * self.width + i;
         if (comptime alpha) {
           const bg_packed = dest_ptr[buffer_index];
-          const result_8 = blend(bg_packed, fg_packed);
+          const result_8 = blend(has_global_alpha, bg_packed, fg_packed, ga);
           // Store full pixel (Single instruction store)
           dest_ptr[buffer_index] = result_8;
         } else {
@@ -936,11 +963,15 @@ pub const DrawContext = struct {
       return v * @Vector(4, f32){ a, a, a, 1.0 };
   }
 
-  fn blend(bg_packed: u32, fg_packed: u32) u32 {
+  fn blend(comptime has_global_alpha: bool, bg_packed: u32, fg_packed: u32, global_alpha: u16) u32 {
     // We expand to u16 immediately to prevent overflow during multiply
     const fg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(fg_packed)));
     const bg: @Vector(4, u16) = @intCast(@as(@Vector(4, u8), @bitCast(bg_packed)));
-    const alpha_val = fg[3];
+    const alpha_val: u16 = if (comptime has_global_alpha) blk: {
+      // (fg[3] * global_alpha) / 255 using the same div-by-255 trick as below.
+      const prod: u32 = @as(u32, fg[3]) * @as(u32, global_alpha);
+      break :blk @intCast((prod + 1 + (prod >> 8)) >> 8);
+    } else fg[3];
     // Optimization: If alpha is 0, skip. If 255, simple copy.
     if (alpha_val == 0) return bg_packed;
     if (alpha_val == 255) {
@@ -1112,9 +1143,15 @@ pub const DrawContext = struct {
   }
 
   /// Draws a point without transformation. To be used by private functions.
-  inline fn internalPlot(self: Self, x: i16, y: i16, acolor: u32) void {
+  inline fn internalPlot(self: Self, comptime alpha: bool, comptime has_global_alpha: bool,
+    ga: u16, x: i16, y: i16, acolor: u32) void {
     if (x >= 0 and x < self.width and y >= 0 and y < self.height) {
-      self.buffer[@as(u32, @intCast(y)) * self.width + @as(u32, @intCast(x))] = acolor;
+      const idx = @as(u32, @intCast(y)) * self.width + @as(u32, @intCast(x));
+      if (comptime alpha) {
+        self.buffer[idx] = blend(has_global_alpha, self.buffer[idx], acolor, ga);
+      } else {
+        self.buffer[idx] = acolor;
+      }
     }
   }
 
@@ -1239,29 +1276,40 @@ pub const DrawContext = struct {
     defer active_edge_table.deinit();
     Fns.getActiveEdgeTable(global_edge_table.items, scan_line, &active_edge_table);
 
-    // Iterate over each scan-line until active edge table is empty.
-    while (active_edge_table.items.len > 0) {
-      // Draw pixels between x-values of odd and even parity edge pairs.
-      var i: usize = 0;
-      while (i + 1 < active_edge_table.items.len) : (i += 2) {
-        const even_edge = active_edge_table.items[i];
-        const odd_edge = active_edge_table.items[i + 1];
+    const ga: u16 = @intFromFloat(@round(self.globalAlpha * 255.0));
+    const has_ga_runtime = ga < 255;
+    inline for (.{ false, true }) |canvas_alpha| {
+      if (self.alpha == canvas_alpha) {
+        inline for (.{ false, true }) |has_global_alpha| {
+          if (has_ga_runtime == has_global_alpha) {
+            // Iterate over each scan-line until active edge table is empty.
+            while (active_edge_table.items.len > 0) {
+              // Draw pixels between x-values of odd and even parity edge pairs.
+              var i: usize = 0;
+              while (i + 1 < active_edge_table.items.len) : (i += 2) {
+                const even_edge = active_edge_table.items[i];
+                const odd_edge = active_edge_table.items[i + 1];
 
-        const x_start_f = asf32(scan_line - even_edge.min_y) * even_edge.invslope + even_edge.x_at_min_y;
-        const x_end_f = asf32(scan_line - odd_edge.min_y) * odd_edge.invslope + odd_edge.x_at_min_y;
+                const x_start_f = asf32(scan_line - even_edge.min_y) * even_edge.invslope + even_edge.x_at_min_y;
+                const x_end_f = asf32(scan_line - odd_edge.min_y) * odd_edge.invslope + odd_edge.x_at_min_y;
 
-        var x_start = @round(x_start_f);
-        const x_end = @round(x_end_f);
+                var x_start = @round(x_start_f);
+                const x_end = @round(x_end_f);
 
-        while (x_start < x_end) {
-          self.internalPlot(@intFromFloat(x_start), scan_line, afillStyle);
-          x_start += 1;
+                while (x_start < x_end) {
+                  self.internalPlot(canvas_alpha, has_global_alpha, ga, @intFromFloat(x_start), scan_line, afillStyle);
+                  x_start += 1;
+                }
+              }
+
+              // Update scan-line and rebuild active edge table for the next line.
+              scan_line += 1;
+              Fns.getActiveEdgeTable(global_edge_table.items, scan_line, &active_edge_table);
+            }
+            return;
+          }
         }
       }
-
-      // Update scan-line and rebuild active edge table for the next line.
-      scan_line += 1;
-      Fns.getActiveEdgeTable(global_edge_table.items, scan_line, &active_edge_table);
     }
   }
 
@@ -1306,7 +1354,8 @@ pub const DrawContext = struct {
     LINE_OVERLAP_BOTH = 3,
   };
 
-  fn drawLineOverlap(self: Self, pstartx: i16, pstarty: i16, endx: i16, endy: i16, aOverlap: u8) void {
+  fn drawLineOverlap(self: Self, comptime alpha: bool, comptime has_global_alpha: bool, ga: u16,
+    pstartx: i16, pstarty: i16, endx: i16, endy: i16, aOverlap: u8) void {
     var tStepX: i16 = 0;
     var tStepY: i16 = 0;
     var tDeltaXTimes2: i16 = 0;
@@ -1332,7 +1381,7 @@ pub const DrawContext = struct {
     tDeltaXTimes2 = tDeltaX << 1;
     tDeltaYTimes2 = tDeltaY << 1;
     // draw start pixel
-    self.internalPlot(startx, starty, self.strokeStyle);
+    self.internalPlot(alpha, has_global_alpha, ga, startx, starty, self.strokeStyle);
     if (tDeltaX > tDeltaY) {
       // start value represents a half step in Y direction
       tError = tDeltaYTimes2 - tDeltaX;
@@ -1342,18 +1391,18 @@ pub const DrawContext = struct {
         if (tError >= 0) {
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MAJOR) != 0) {
             // draw pixel in main direction before changing
-            self.internalPlot(startx, starty, self.strokeStyle);
+            self.internalPlot(alpha, has_global_alpha, ga, startx, starty, self.strokeStyle);
           }
           // change Y
           starty += tStepY;
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MINOR) != 0) {
             // draw pixel in minor direction before changing
-            self.internalPlot(startx - tStepX, starty, self.strokeStyle);
+            self.internalPlot(alpha, has_global_alpha, ga, startx - tStepX, starty, self.strokeStyle);
           }
           tError -= tDeltaXTimes2;
         }
         tError += tDeltaYTimes2;
-        self.internalPlot(startx, starty, self.strokeStyle);
+        self.internalPlot(alpha, has_global_alpha, ga, startx, starty, self.strokeStyle);
       }
     } else {
       tError = tDeltaXTimes2 - tDeltaY;
@@ -1362,17 +1411,17 @@ pub const DrawContext = struct {
         if (tError >= 0) {
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MAJOR) != 0) {
             // draw pixel in main direction before changing
-            self.internalPlot(startx, starty, self.strokeStyle);
+            self.internalPlot(alpha, has_global_alpha, ga, startx, starty, self.strokeStyle);
           }
           startx += tStepX;
           if (aOverlap & @intFromEnum(Overlap.LINE_OVERLAP_MINOR) != 0) {
             // draw pixel in minor direction before changing
-            self.internalPlot(startx, starty - tStepY, self.strokeStyle);
+            self.internalPlot(alpha, has_global_alpha, ga, startx, starty - tStepY, self.strokeStyle);
           }
           tError -= tDeltaYTimes2;
         }
         tError += tDeltaXTimes2;
-        self.internalPlot(startx, starty, self.strokeStyle);
+        self.internalPlot(alpha, has_global_alpha, ga, startx, starty, self.strokeStyle);
       }
     }
   }
@@ -1479,7 +1528,8 @@ pub const DrawContext = struct {
   // and direction of thickness changes for each octant (except for LINE_THICKNESS_MIDDLE and thickness value is odd)
   // thicknessMode can be LINE_THICKNESS_MIDDLE or any other value
   //
-  fn drawThickLine(self: Self, pstartx: i16, pstarty: i16, pendx: i16, pendy: i16) void {
+  fn drawThickLine(self: Self, comptime alpha: bool, comptime has_global_alpha: bool, ga: u16,
+    pstartx: i16, pstarty: i16, pendx: i16, pendy: i16) void {
     var tStepX: i16 = 0;
     var tStepY: i16 = 0;
     var tDeltaXTimes2: i16 = 0;
@@ -1529,7 +1579,7 @@ pub const DrawContext = struct {
           i -= 1;
         }
       }
-      self.drawLineOverlap(startx, starty, endx, endy, @intFromEnum(tOverlap));
+      self.drawLineOverlap(alpha, has_global_alpha, ga, startx, starty, endx, endy, @intFromEnum(tOverlap));
       // drawLineWu(startx, starty, endx, endy, @intFromEnum(tOverlap));
       // draw thickness lines
       tError = tDeltaYTimes2 - tDeltaX;
@@ -1547,7 +1597,7 @@ pub const DrawContext = struct {
           tOverlap = Overlap.LINE_OVERLAP_BOTH;
         }
         tError += tDeltaYTimes2;
-        self.drawLineOverlap(startx, starty, endx, endy, @intFromEnum(tOverlap));
+        self.drawLineOverlap(alpha, has_global_alpha, ga, startx, starty, endx, endy, @intFromEnum(tOverlap));
         // drawLineWu(startx, starty, endx, endy, @intFromEnum(tOverlap));
         i -= 1;
       }
@@ -1568,7 +1618,7 @@ pub const DrawContext = struct {
           i -= 1;
         }
       }
-      self.drawLineOverlap(startx, starty, endx, endy, @intFromEnum(tOverlap));
+      self.drawLineOverlap(alpha, has_global_alpha, ga, startx, starty, endx, endy, @intFromEnum(tOverlap));
       // drawLineWu(startx, starty, endx, endy, @intFromEnum(tOverlap));
       tError = tDeltaXTimes2 - tDeltaY;
       var i = self.thickness;
@@ -1583,7 +1633,7 @@ pub const DrawContext = struct {
           tOverlap = Overlap.LINE_OVERLAP_BOTH;
         }
         tError += tDeltaXTimes2;
-        self.drawLineOverlap(startx, starty, endx, endy, @intFromEnum(tOverlap));
+        self.drawLineOverlap(alpha, has_global_alpha, ga, startx, starty, endx, endy, @intFromEnum(tOverlap));
         // drawLineWu(startx, starty, endx, endy, @intFromEnum(tOverlap));
         i -= 1;
       }

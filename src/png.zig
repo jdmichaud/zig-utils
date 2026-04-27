@@ -122,7 +122,7 @@ const HuffmanLengthRange = struct {
 // Fixed Huffman codes as described in RFC 1951
 // Lit Value    Bits        Codes
 // ---------    ----        -----
-//  0 - 143     8           00110000 through
+//   0 - 143     8          00110000 through
 //                          10111111
 // 144 - 255     9          110010000 through
 //                          111111111
