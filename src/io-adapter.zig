@@ -1,8 +1,5 @@
 // https://zig.news/david_vanderson/interfaces-in-zig-o1c
 const std = @import("std");
-pub const sdl = @cImport({
-  @cInclude("SDL2/SDL.h");
-});
 
 pub const MouseMove = struct {
   x: i32,
@@ -79,50 +76,50 @@ pub const Scancode = enum(u32) {
   LEFTBRACKET = 47,
   RIGHTBRACKET = 48,
   BACKSLASH = 49, // < Located at the lower left of the return
-                               //   key on ISO keyboards and at the right end
-                               //   of the QWERTY row on ANSI keyboards.
-                               //   Produces REVERSE SOLIDUS (backslash) and
-                               //   VERTICAL LINE in a US layout, REVERSE
-                               //   SOLIDUS and VERTICAL LINE in a UK Mac
-                               //   layout, NUMBER SIGN and TILDE in a UK
-                               //   Windows layout, DOLLAR SIGN and POUND SIGN
-                               //   in a Swiss German layout, NUMBER SIGN and
-                               //   APOSTROPHE in a German layout, GRAVE
-                               //   ACCENT and POUND SIGN in a French Mac
-                               //   layout, and ASTERISK and MICRO SIGN in a
-                               //   French Windows layout.
-                               //
+                  //   key on ISO keyboards and at the right end
+                  //   of the QWERTY row on ANSI keyboards.
+                  //   Produces REVERSE SOLIDUS (backslash) and
+                  //   VERTICAL LINE in a US layout, REVERSE
+                  //   SOLIDUS and VERTICAL LINE in a UK Mac
+                  //   layout, NUMBER SIGN and TILDE in a UK
+                  //   Windows layout, DOLLAR SIGN and POUND SIGN
+                  //   in a Swiss German layout, NUMBER SIGN and
+                  //   APOSTROPHE in a German layout, GRAVE
+                  //   ACCENT and POUND SIGN in a French Mac
+                  //   layout, and ASTERISK and MICRO SIGN in a
+                  //   French Windows layout.
+                  //
   NONUSHASH = 50, // < ISO USB keyboards actually use this code
-                               //   instead of 49 for the same key, but all
-                               //   OSes I've seen treat the two codes
-                               //   identically. So, as an implementor, unless
-                               //   your keyboard generates both of those
-                               //   codes and your OS treats them differently,
-                               //   you should generate BACKSLASH
-                               //   instead of this code. As a user, you
-                               //   should not rely on this code because SDL
-                               //   will never generate it with most (all?)
-                               //   keyboards.
-                               //
+                  //   instead of 49 for the same key, but all
+                  //   OSes I've seen treat the two codes
+                  //   identically. So, as an implementor, unless
+                  //   your keyboard generates both of those
+                  //   codes and your OS treats them differently,
+                  //   you should generate BACKSLASH
+                  //   instead of this code. As a user, you
+                  //   should not rely on this code because SDL
+                  //   will never generate it with most (all?)
+                  //   keyboards.
+                  //
   SEMICOLON = 51,
   APOSTROPHE = 52,
   GRAVE = 53, // < Located in the top left corner (on both ANSI
-                           //   and ISO keyboards). Produces GRAVE ACCENT and
-                           //   TILDE in a US Windows layout and in US and UK
-                           //   Mac layouts on ANSI keyboards, GRAVE ACCENT
-                           //   and NOT SIGN in a UK Windows layout, SECTION
-                           //   SIGN and PLUS-MINUS SIGN in US and UK Mac
-                           //   layouts on ISO keyboards, SECTION SIGN and
-                           //   DEGREE SIGN in a Swiss German layout (Mac:
-                           //   only on ISO keyboards), CIRCUMFLEX ACCENT and
-                           //   DEGREE SIGN in a German layout (Mac: only on
-                           //   ISO keyboards), SUPERSCRIPT TWO and TILDE in a
-                           //   French Windows layout, COMMERCIAL AT and
-                           //   NUMBER SIGN in a French Mac layout on ISO
-                           //   keyboards, and LESS-THAN SIGN and GREATER-THAN
-                           //   SIGN in a Swiss German, German, or French Mac
-                           //   layout on ANSI keyboards.
-                           //
+              //   and ISO keyboards). Produces GRAVE ACCENT and
+              //   TILDE in a US Windows layout and in US and UK
+              //   Mac layouts on ANSI keyboards, GRAVE ACCENT
+              //   and NOT SIGN in a UK Windows layout, SECTION
+              //   SIGN and PLUS-MINUS SIGN in US and UK Mac
+              //   layouts on ISO keyboards, SECTION SIGN and
+              //   DEGREE SIGN in a Swiss German layout (Mac:
+              //   only on ISO keyboards), CIRCUMFLEX ACCENT and
+              //   DEGREE SIGN in a German layout (Mac: only on
+              //   ISO keyboards), SUPERSCRIPT TWO and TILDE in a
+              //   French Windows layout, COMMERCIAL AT and
+              //   NUMBER SIGN in a French Mac layout on ISO
+              //   keyboards, and LESS-THAN SIGN and GREATER-THAN
+              //   SIGN in a Swiss German, German, or French Mac
+              //   layout on ANSI keyboards.
+              //
   COMMA = 54,
   PERIOD = 55,
   SLASH = 56,
@@ -146,7 +143,7 @@ pub const Scancode = enum(u32) {
   SCROLLLOCK = 71,
   PAUSE = 72,
   INSERT = 73, // < insert on PC, help on some Mac keyboards (but
-                            //   does send code 73, not 117)
+               //   does send code 73, not 117)
   HOME = 74,
   PAGEUP = 75,
   DELETE = 76,
@@ -397,6 +394,9 @@ pub const IOAdapter = struct {
 
 pub const SDLAdapter = struct {
   const Self = @This();
+  pub const sdl = @cImport({
+    @cInclude("SDL2/SDL.h");
+  });
 
   window: *sdl.SDL_Window,
   texture: *sdl.SDL_Texture,
