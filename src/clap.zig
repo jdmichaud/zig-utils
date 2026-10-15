@@ -5,8 +5,7 @@
 //
 // Usage:
 // ```zig
-// const args = try std.process.argsAlloc(allocator);
-// defer std.process.argsFree(allocator, args);
+// const args = try init.minimal.args.toSlice(init.arena.allocator());
 //
 // const parsedArgs = clap.parser(clap.ArgDescriptor{
 //   .name = "qvm",
@@ -83,8 +82,25 @@
 
 const std = @import("std");
 
-const stdout = std.io.getStdOut().writer();
-const stderr = std.io.getStdErr().writer();
+const stdout: Output = .stdout;
+const stderr: Output = .stderr;
+
+const Output = enum {
+  stdout,
+  stderr,
+
+  fn print(self: Output, comptime format: []const u8, args: anytype) std.Io.Writer.Error!void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = switch (self) {
+      .stdout => std.Io.File.stdout(),
+      .stderr => std.Io.File.stderr(),
+    };
+    var buffer: [256]u8 = undefined;
+    var writer = file.writerStreaming(io, &buffer);
+    try writer.interface.print(format, args);
+    try writer.interface.flush();
+  }
+};
 
 pub const OptionDescription = struct {
   short: ?[]const u8,
@@ -100,7 +116,8 @@ pub const ArgDescriptor = struct {
   withHelp: bool = true,
   version: ?[]const u8 = null,
   expectArgs: []const []const u8 = &[_][]const u8{},
-  minNbArgs: usize = 0,
+  // null: exactly expectArgs.len arguments. Otherwise: at least minNbArgs.
+  minNbArgs: ?usize = null,
   options: []const OptionDescription,
 };
 
@@ -127,7 +144,7 @@ pub fn printUsage(allocator: std.mem.Allocator, argsDescriptor: ArgDescriptor) v
   }) catch unreachable;
 }
 
-pub fn printHelp(allocator: std.mem.Allocator, argsDescriptor: ArgDescriptor) void {
+pub fn printHelp(allocator: std.mem.Allocator, comptime argsDescriptor: ArgDescriptor) void {
   stdout.print("{s}{s} {s}\n", .{
     argsDescriptor.name,
     if (argsDescriptor.version) |version| " (" ++ version ++ ")" else "",
@@ -189,16 +206,16 @@ pub fn parser(argsDescriptor: ArgDescriptor) type {
     var argsStore = Args{
       .switchMap = std.StringHashMap(bool).init(allocator),
       .optionMap = std.StringHashMap([]const u8).init(allocator),
-      .arguments = std.ArrayList([]const u8).init(allocator),
+      .arguments = .empty,
     };
 
-    pub fn parse(args: [][:0]u8) Args {
+    pub fn parse(args: []const [:0]const u8) Args {
       if (argsDescriptor.withHelp) {
         // Look for help and print it
         for (args) |arg| {
           if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             printHelp(allocator, argsDescriptor);
-            std.posix.exit(0);
+            std.process.exit(0);
           }
         }
 
@@ -221,7 +238,7 @@ pub fn parser(argsDescriptor: ArgDescriptor) type {
                     stderr.print("error: option {s} expected an argument\n", .{ arg })
                         catch unreachable;
                     printUsage(allocator, argsDescriptor);
-                    std.posix.exit(1);
+                    std.process.exit(1);
                   }
                   argsStore.optionMap.put(option.long, args[i + 1])
                     catch @panic("increase fixed buffer size");
@@ -233,23 +250,23 @@ pub fn parser(argsDescriptor: ArgDescriptor) type {
               // An option was provided but not described.
               stderr.print("error: unknown option {s}\n", .{ arg }) catch unreachable;
               printUsage(allocator, argsDescriptor);
-              std.posix.exit(1);
+              std.process.exit(1);
             }
           } else {
             // Here are the argument to the program.
-            argsStore.arguments.append(args[i]) catch unreachable;
+            argsStore.arguments.append(allocator, args[i]) catch unreachable;
           }
           i += 1;
         }
       }
 
-      if ((argsDescriptor.minNbArgs != 0 and argsStore.arguments.items.len < argsDescriptor.minNbArgs) or
-        (argsDescriptor.minNbArgs == 0 and argsStore.arguments.items.len != argsDescriptor.expectArgs.len)) {
+      if (if (argsDescriptor.minNbArgs) |minNbArgs| argsStore.arguments.items.len < minNbArgs
+        else argsStore.arguments.items.len != argsDescriptor.expectArgs.len) {
         stderr.print("error: incorrect number of arguments. Expected {} arguments, {} given.\n", .{
           argsDescriptor.expectArgs.len, argsStore.arguments.items.len,
         }) catch unreachable;
         printUsage(allocator, argsDescriptor);
-        std.posix.exit(1);
+        std.process.exit(1);
       }
       return argsStore;
     }

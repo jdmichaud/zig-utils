@@ -98,14 +98,12 @@ pub fn add_example(b: *std.Build, command: []const u8, source: []const u8,
             .imports = imports,
         }),
     });
-    exe.linkSystemLibrary("SDL2");
-    exe.linkSystemLibrary("c");
+    exe.root_module.linkSystemLibrary("SDL2", .{});
+    exe.root_module.link_libc = true;
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const run_step = b.step(command, help);
     run_step.dependOn(&run_cmd.step);
